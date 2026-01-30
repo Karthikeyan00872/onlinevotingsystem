@@ -12,6 +12,7 @@ from werkzeug.utils import secure_filename
 from datetime import datetime
 import tempfile
 import numpy as np
+from bson import ObjectId
 
 app = Flask(__name__, static_folder='.', static_url_path='')
 CORS(app)
@@ -22,8 +23,14 @@ try:
     client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
     db = client['online_voting']
     users_collection = db['users']
+    votes_collection = db['votes']
+    candidates_collection = db['candidates']
+    admin_collection = db['admins']
+    
+    # Create indexes
     users_collection.create_index('username', unique=True)
     users_collection.create_index('aadhaar_number', unique=True, sparse=True)
+    
     MONGODB_AVAILABLE = True
     print("✓ MongoDB connected successfully")
 except Exception as e:
@@ -366,6 +373,42 @@ def allowed_file(filename):
     """Check if file extension is allowed"""
     return '.' in filename and \
            filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def create_default_admin():
+    """Create default admin user"""
+    try:
+        admin_exists = admin_collection.find_one({'username': 'admin'})
+        if not admin_exists:
+            hashed_password = generate_password_hash('admin@123')
+            admin_collection.insert_one({
+                'username': 'admin',
+                'password': hashed_password,
+                'role': 'superadmin',
+                'created_at': datetime.now()
+            })
+            print("✓ Default admin user created")
+    except Exception as e:
+        print(f"✗ Failed to create admin: {str(e)}")
+
+def create_sample_candidates():
+    """Create sample candidates"""
+    try:
+        candidates_exist = candidates_collection.count_documents({})
+        if candidates_exist == 0:
+            candidates = [
+                {'candidate_id': 1, 'name': 'John Smith', 'party': 'National Party', 'is_active': True},
+                {'candidate_id': 2, 'name': 'Emma Johnson', 'party': 'Progressive Alliance', 'is_active': True},
+                {'candidate_id': 3, 'name': 'Michael Brown', 'party': 'Unity Front', 'is_active': True}
+            ]
+            candidates_collection.insert_many(candidates)
+            print("✓ Sample candidates created")
+    except Exception as e:
+        print(f"✗ Failed to create candidates: {str(e)}")
+
+# Initialize database
+if MONGODB_AVAILABLE:
+    create_default_admin()
+    create_sample_candidates()
 
 # ========== User Authentication Routes ==========
 
@@ -829,27 +872,348 @@ def get_qr_info():
     except Exception as e:
         return jsonify({'success': False, 'message': f'Failed to get QR info: {str(e)}'}), 500
 
-@app.route('/api/webcam_scan', methods=['GET'])
-def webcam_scan():
-    """Scan QR code using webcam"""
-    result = capture_qr_from_webcam()
-    return jsonify(result)
+# ========== Voting System Routes ==========
 
-@app.route('/api/test_webcam', methods=['GET'])
-def test_webcam():
-    """Test if webcam is available"""
-    if not QR_SCANNING_AVAILABLE:
-        return jsonify({'success': False, 'message': 'QR scanning libraries not available'})
-    
+@app.route('/api/admin_login', methods=['POST'])
+def admin_login():
+    """Admin login"""
     try:
-        cap = cv2.VideoCapture(0)
-        if cap.isOpened():
-            cap.release()
-            return jsonify({'success': True, 'message': 'Webcam is available'})
+        data = request.get_json()
+        if not data:
+            return jsonify({'success': False, 'message': 'No data provided'}), 400
+        
+        username = data.get('username', '').strip()
+        password = data.get('password', '').strip()
+        
+        if not username or not password:
+            return jsonify({'success': False, 'message': 'Username and password are required'}), 400
+        
+        if MONGODB_AVAILABLE:
+            admin = admin_collection.find_one({'username': username})
+            if not admin:
+                return jsonify({'success': False, 'message': 'Admin user does not exist'}), 401
+            
+            if not check_password_hash(admin['password'], password):
+                return jsonify({'success': False, 'message': 'Incorrect password'}), 401
+            
+            # Update last login time
+            admin_collection.update_one(
+                {'_id': admin['_id']},
+                {'$set': {'last_login': datetime.now()}}
+            )
+            
+            admin_data = {
+                'username': admin['username'],
+                'role': admin.get('role', 'admin'),
+                'last_login': admin.get('last_login')
+            }
         else:
-            return jsonify({'success': False, 'message': 'Webcam not accessible'})
+            # Mock data
+            admin_data = {
+                'username': 'admin',
+                'role': 'superadmin',
+                'last_login': datetime.now().isoformat()
+            }
+        
+        return jsonify({
+            'success': True,
+            'message': 'Admin login successful',
+            'admin': admin_data
+        })
+        
     except Exception as e:
-        return jsonify({'success': False, 'message': f'Webcam test failed: {str(e)}'})
+        return jsonify({'success': False, 'message': f'Admin login failed: {str(e)}'}), 500
+
+@app.route('/api/get_user_info', methods=['POST'])
+def get_user_info():
+    """Get user information for voting page"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'success': False, 'message': 'No data provided'}), 400
+        
+        username = data.get('username')
+        if not username:
+            return jsonify({'success': False, 'message': 'Username required'}), 400
+        
+        if MONGODB_AVAILABLE:
+            user = users_collection.find_one({'username': username})
+            if not user:
+                return jsonify({'success': False, 'message': 'User not found'}), 404
+            
+            # Check if user has already voted
+            has_voted = votes_collection.find_one({'username': username}) is not None
+            
+            # Get candidate list
+            candidates = list(candidates_collection.find({'is_active': True}, {'_id': 0, 'candidate_id': 1, 'name': 1, 'party': 1}))
+            
+            user_data = {
+                'username': user['username'],
+                'full_name': user.get('full_name', user['username']),
+                'aadhaar_number': user.get('aadhaar_number'),
+                'is_verified': user.get('is_verified', False),
+                'has_voted': has_voted,
+                'qr_data': user.get('qr_data', {})
+            }
+            
+            return jsonify({
+                'success': True,
+                'message': 'User info retrieved',
+                'user': user_data,
+                'candidates': candidates
+            })
+        else:
+            # Mock data
+            return jsonify({
+                'success': True,
+                'message': 'Mock user info',
+                'user': {
+                    'username': username,
+                    'full_name': username,
+                    'aadhaar_number': '999999999999',
+                    'is_verified': True,
+                    'has_voted': False,
+                    'qr_data': {'name': username}
+                },
+                'candidates': [
+                    {'candidate_id': 1, 'name': 'John Smith', 'party': 'National Party'},
+                    {'candidate_id': 2, 'name': 'Emma Johnson', 'party': 'Progressive Alliance'},
+                    {'candidate_id': 3, 'name': 'Michael Brown', 'party': 'Unity Front'}
+                ]
+            })
+            
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'Failed to get user info: {str(e)}'}), 500
+
+@app.route('/api/submit_vote', methods=['POST'])
+def submit_vote():
+    """Submit a vote"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'success': False, 'message': 'No data provided'}), 400
+        
+        username = data.get('username')
+        candidate_id = data.get('candidate_id')
+        
+        if not username or not candidate_id:
+            return jsonify({'success': False, 'message': 'Username and candidate ID required'}), 400
+        
+        if MONGODB_AVAILABLE:
+            # Check if user exists
+            user = users_collection.find_one({'username': username})
+            if not user:
+                return jsonify({'success': False, 'message': 'User not found'}), 404
+            
+            # Check if user is verified
+            if not user.get('is_verified', False):
+                return jsonify({'success': False, 'message': 'User not verified. Please verify Aadhaar first.'}), 400
+            
+            # Check if user has already voted
+            existing_vote = votes_collection.find_one({'username': username})
+            if existing_vote:
+                return jsonify({'success': False, 'message': 'You have already voted'}), 400
+            
+            # Check if candidate exists
+            candidate = candidates_collection.find_one({'candidate_id': candidate_id, 'is_active': True})
+            if not candidate:
+                return jsonify({'success': False, 'message': 'Invalid candidate'}), 400
+            
+            # Record the vote
+            vote_data = {
+                'username': username,
+                'aadhaar_number': user.get('aadhaar_number'),
+                'candidate_id': candidate_id,
+                'candidate_name': candidate.get('name'),
+                'candidate_party': candidate.get('party'),
+                'voted_at': datetime.now(),
+                'ip_address': request.remote_addr
+            }
+            
+            votes_collection.insert_one(vote_data)
+            
+            return jsonify({
+                'success': True,
+                'message': 'Vote submitted successfully',
+                'vote': {
+                    'candidate': candidate.get('name'),
+                    'party': candidate.get('party'),
+                    'timestamp': vote_data['voted_at'].isoformat()
+                }
+            })
+        else:
+            return jsonify({
+                'success': True,
+                'message': 'Mock vote submitted',
+                'vote': {
+                    'candidate': 'Mock Candidate',
+                    'party': 'Mock Party',
+                    'timestamp': datetime.now().isoformat()
+                }
+            })
+            
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'Failed to submit vote: {str(e)}'}), 500
+
+@app.route('/api/admin/get_results', methods=['GET'])
+def get_voting_results():
+    """Get voting results (admin only)"""
+    try:
+        # Add authentication check here in production
+        if MONGODB_AVAILABLE:
+            # Get total votes per candidate
+            pipeline = [
+                {
+                    '$group': {
+                        '_id': '$candidate_id',
+                        'candidate_name': {'$first': '$candidate_name'},
+                        'candidate_party': {'$first': '$candidate_party'},
+                        'total_votes': {'$sum': 1}
+                    }
+                },
+                {'$sort': {'total_votes': -1}}
+            ]
+            
+            results = list(votes_collection.aggregate(pipeline))
+            
+            # Get total votes
+            total_votes = votes_collection.count_documents({})
+            
+            # Get voter statistics
+            total_users = users_collection.count_documents({'is_verified': True})
+            voted_users = votes_collection.distinct('username')
+            voting_percentage = (len(voted_users) / total_users * 100) if total_users > 0 else 0
+            
+            # Get total candidates
+            total_candidates = candidates_collection.count_documents({'is_active': True})
+            
+            return jsonify({
+                'success': True,
+                'results': results,
+                'statistics': {
+                    'total_votes': total_votes,
+                    'total_voters': total_users,
+                    'voted_users': len(voted_users),
+                    'voting_percentage': round(voting_percentage, 2),
+                    'total_candidates': total_candidates
+                }
+            })
+        else:
+            # Mock results
+            return jsonify({
+                'success': True,
+                'results': [
+                    {'candidate_name': 'John Smith', 'candidate_party': 'National Party', 'total_votes': 150},
+                    {'candidate_name': 'Emma Johnson', 'candidate_party': 'Progressive Alliance', 'total_votes': 120},
+                    {'candidate_name': 'Michael Brown', 'candidate_party': 'Unity Front', 'total_votes': 80}
+                ],
+                'statistics': {
+                    'total_votes': 350,
+                    'total_voters': 500,
+                    'voted_users': 350,
+                    'voting_percentage': 70.0,
+                    'total_candidates': 3
+                }
+            })
+            
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'Failed to get results: {str(e)}'}), 500
+
+@app.route('/api/admin/add_candidate', methods=['POST'])
+def add_candidate():
+    """Add candidate (admin only)"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'success': False, 'message': 'No data provided'}), 400
+        
+        name = data.get('name', '').strip()
+        party = data.get('party', '').strip()
+        
+        if not name or not party:
+            return jsonify({'success': False, 'message': 'Candidate name and party required'}), 400
+        
+        if MONGODB_AVAILABLE:
+            # Generate candidate ID
+            last_candidate = candidates_collection.find_one(sort=[("candidate_id", -1)])
+            candidate_id = last_candidate['candidate_id'] + 1 if last_candidate else 1
+            
+            candidate_data = {
+                'candidate_id': candidate_id,
+                'name': name,
+                'party': party,
+                'added_at': datetime.now(),
+                'is_active': True
+            }
+            
+            candidates_collection.insert_one(candidate_data)
+            
+            return jsonify({
+                'success': True,
+                'message': f'Candidate {name} added successfully',
+                'candidate': {
+                    'candidate_id': candidate_id,
+                    'name': name,
+                    'party': party
+                }
+            })
+        else:
+            return jsonify({
+                'success': True,
+                'message': 'Mock candidate added',
+                'candidate': {
+                    'candidate_id': 99,
+                    'name': name,
+                    'party': party
+                }
+            })
+            
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'Failed to add candidate: {str(e)}'}), 500
+
+@app.route('/api/get_vote_history', methods=['POST'])
+def get_vote_history():
+    """Get user's vote history"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'success': False, 'message': 'No data provided'}), 400
+        
+        username = data.get('username')
+        if not username:
+            return jsonify({'success': False, 'message': 'Username required'}), 400
+        
+        if MONGODB_AVAILABLE:
+            vote = votes_collection.find_one({'username': username})
+            if vote:
+                return jsonify({
+                    'success': True,
+                    'has_voted': True,
+                    'vote': {
+                        'candidate_name': vote.get('candidate_name'),
+                        'candidate_party': vote.get('candidate_party'),
+                        'voted_at': vote.get('voted_at').isoformat() if vote.get('voted_at') else None
+                    }
+                })
+            else:
+                return jsonify({
+                    'success': True,
+                    'has_voted': False,
+                    'vote': None
+                })
+        else:
+            return jsonify({
+                'success': True,
+                'has_voted': True,
+                'vote': {
+                    'candidate_name': 'John Smith',
+                    'candidate_party': 'National Party',
+                    'voted_at': datetime.now().isoformat()
+                }
+            })
+            
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'Failed to get vote history: {str(e)}'}), 500
 
 # ========== Original Flask Routes ==========
 
@@ -857,6 +1221,16 @@ def test_webcam():
 def index():
     """Main page"""
     return send_from_directory('.', 'index.html')
+
+@app.route('/voting')
+def voting_page():
+    """Voting page"""
+    return send_from_directory('.', 'voting.html')
+
+@app.route('/admin')
+def admin_page():
+    """Admin page"""
+    return send_from_directory('.', 'admin.html')
 
 @app.route('/api/decode', methods=['POST'])
 def decode_qr():
@@ -932,6 +1306,28 @@ def upload_file():
     except Exception as e:
         return jsonify({'success': False, 'message': f'File processing failed: {str(e)}'}), 500
 
+@app.route('/api/webcam_scan', methods=['GET'])
+def webcam_scan():
+    """Scan QR code using webcam"""
+    result = capture_qr_from_webcam()
+    return jsonify(result)
+
+@app.route('/api/test_webcam', methods=['GET'])
+def test_webcam():
+    """Test if webcam is available"""
+    if not QR_SCANNING_AVAILABLE:
+        return jsonify({'success': False, 'message': 'QR scanning libraries not available'})
+    
+    try:
+        cap = cv2.VideoCapture(0)
+        if cap.isOpened():
+            cap.release()
+            return jsonify({'success': True, 'message': 'Webcam is available'})
+        else:
+            return jsonify({'success': False, 'message': 'Webcam not accessible'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'Webcam test failed: {str(e)}'})
+
 @app.route('/api/test', methods=['GET'])
 def test_api():
     """Test endpoint"""
@@ -978,7 +1374,7 @@ def uploaded_file(filename):
 
 if __name__ == '__main__':
     print("\n" + "="*60)
-    print("Enhanced Aadhaar QR Decoding Server with Image Upload & Webcam Scan")
+    print("Enhanced Aadhaar QR Decoding Server with Voting System")
     print("="*60)
     print(f"MongoDB: {'✓ Connected' if MONGODB_AVAILABLE else '✗ Not connected'}")
     print(f"QR Scanning: {'✓ Available' if QR_SCANNING_AVAILABLE else '✗ Unavailable'}")
@@ -986,8 +1382,15 @@ if __name__ == '__main__':
     print(f"Upload Folder: {os.path.abspath(UPLOAD_FOLDER)}")
     print("\nAvailable Endpoints:")
     print("  GET  /                         - Main page")
+    print("  GET  /voting                   - Voting page")
+    print("  GET  /admin                    - Admin panel")
     print("  POST /api/register             - User registration (with Aadhaar)")
     print("  POST /api/login                - User login")
+    print("  POST /api/admin_login          - Admin login")
+    print("  POST /api/get_user_info        - Get user info for voting")
+    print("  POST /api/submit_vote          - Submit vote")
+    print("  GET  /api/admin/get_results    - Get voting results (admin)")
+    print("  POST /api/admin/add_candidate  - Add candidate (admin)")
     print("  POST /api/validate_aadhaar     - Validate Aadhaar QR")
     print("  POST /api/scan_uploaded_image  - Scan QR from uploaded image")
     print("  POST /api/decode               - Decode QR text data")

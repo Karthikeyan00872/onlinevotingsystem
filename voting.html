@@ -185,7 +185,8 @@
                     document.getElementById('voting-section').style.display = 'none';
                     document.getElementById('not-verified-section').style.display = 'none';
                     
-                    // TODO: Fetch and display vote details if available
+                    // Fetch and display vote details
+                    loadVoteHistory();
                 } else {
                     document.getElementById('voting-section').style.display = 'block';
                     document.getElementById('already-voted-section').style.display = 'none';
@@ -196,6 +197,32 @@
                 document.getElementById('not-verified-section').style.display = 'block';
                 document.getElementById('voting-section').style.display = 'none';
                 document.getElementById('already-voted-section').style.display = 'none';
+            }
+        }
+
+        async function loadVoteHistory() {
+            const username = localStorage.getItem('username');
+            
+            try {
+                const response = await fetch(`${API_BASE_URL}/get_vote_history`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ username: username })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success && data.has_voted) {
+                    document.getElementById('vote-details').innerHTML = `
+                        <p><strong>Candidate:</strong> ${data.vote.candidate_name}</p>
+                        <p><strong>Party:</strong> ${data.vote.candidate_party}</p>
+                        <p><strong>Voted at:</strong> ${new Date(data.vote.voted_at).toLocaleString()}</p>
+                    `;
+                }
+            } catch (error) {
+                console.error('Failed to load vote history:', error);
             }
         }
 

@@ -30,6 +30,15 @@ function togglePassword(inputId) {
     }
 }
 
+// Navigation Functions
+function goToVoting() {
+    window.location.href = '/voting';
+}
+
+function goToAdmin() {
+    window.location.href = '/admin';
+}
+
 // Modal Functions
 function showModal(modalId, show = true) {
     const modal = document.getElementById(modalId);
