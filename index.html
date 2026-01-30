@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voting System - Aadhaar QR Scanner</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <div id="login-page" class="page active">
+            <div class="header">
+                <div class="logo">
+                    <i class="fas fa-vote-yea"></i>
+                    <h1>Voting System</h1>
+                </div>
+                <p class="tagline">Secure Login with Aadhaar QR Authentication</p>
+            </div>
+
+            <div class="auth-form">
+                <form id="login-form">
+                    <h2>Login</h2>
+                    
+                    <div class="form-group">
+                        <label for="username">
+                            <i class="fas fa-user"></i> Username
+                        </label>
+                        <input type="text" id="username" placeholder="Enter username" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="password">
+                            <i class="fas fa-lock"></i> Password
+                        </label>
+                        <input type="password" id="password" placeholder="Enter password" required>
+                        <button type="button" class="btn-toggle-password" onclick="togglePassword('password')">
+                            <i class="fas fa-eye"></i>
+                        </button>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary btn-full">
+                        <i class="fas fa-sign-in-alt"></i> Login
+                    </button>
+
+                    <div class="auth-switch">
+                        <p>No account? <a href="#" onclick="showPage('register-page')">Register with Aadhaar QR</a></p>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <div id="register-page" class="page">
+            <div class="header">
+                <button class="btn-back" onclick="showPage('login-page')">
+                    <i class="fas fa-arrow-left"></i> Back
+                </button>
+                <h2>Register with Aadhaar</h2>
+                <p class="tagline">Scan your Aadhaar QR code to register</p>
+            </div>
+
+            <div class="auth-form">
+                <form id="register-form">
+                    <div class="form-group">
+                        <label for="reg-username" class="required">
+                            <i class="fas fa-user"></i> Username
+                        </label>
+                        <input type="text" id="reg-username" required placeholder="Username (min 3 characters)">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="reg-password" class="required">
+                            <i class="fas fa-lock"></i> Password
+                        </label>
+                        <input type="password" id="reg-password" required placeholder="Password (min 6 characters)">
+                        <button type="button" class="btn-toggle-password" onclick="togglePassword('reg-password')">
+                            <i class="fas fa-eye"></i>
+                        </button>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="full-name">
+                            <i class="fas fa-id-card"></i> Full Name
+                        </label>
+                        <input type="text" id="full-name" placeholder="Your full name (optional)">
+                    </div>
+
+                    <div class="qr-section">
+                        <h4><i class="fas fa-qrcode"></i> Aadhaar QR Verification <span class="required">(Required)</span></h4>
+                        <p class="note">Scan the QR code from your Aadhaar card using one of the methods below:</p>
+                        
+                        <div class="scanning-options">
+                            <div class="scan-option">
+                                <h5><i class="fas fa-camera"></i> Method 1: Webcam Scan</h5>
+                                <p>Use your webcam to scan QR code directly</p>
+                                <button type="button" class="btn btn-primary" onclick="startWebcamScan()">
+                                    <i class="fas fa-video"></i> Start Webcam Scan
+                                </button>
+                            </div>
+                            
+                            <div class="scan-option">
+                                <h5><i class="fas fa-upload"></i> Method 2: Upload Image</h5>
+                                <p>Upload an image containing Aadhaar QR code</p>
+                                <div class="file-upload">
+                                    <input type="file" id="qr-image-upload" accept="image/*" capture="environment" onchange="handleImageUpload(this)">
+                                    <label for="qr-image-upload" class="btn btn-secondary">
+                                        <i class="fas fa-upload"></i> Choose Image
+                                    </label>
+                                </div>
+                            </div>
+                            
+                            <div class="scan-option">
+                                <h5><i class="fas fa-keyboard"></i> Method 3: Manual Input</h5>
+                                <p>Paste QR code text manually</p>
+                                <textarea id="qr-manual-input" rows="3" placeholder="Paste QR code text here..."></textarea>
+                                <button type="button" class="btn btn-secondary" onclick="validateManualQR()">
+                                    <i class="fas fa-check"></i> Validate
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <div id="webcam-container" style="display: none; margin-top: 20px;">
+                            <div class="webcam-preview">
+                                <video id="webcam-video" autoplay playsinline></video>
+                                <canvas id="webcam-canvas" style="display: none;"></canvas>
+                            </div>
+                            <div class="webcam-controls">
+                                <button type="button" class="btn btn-primary" onclick="captureQRFromWebcam()">
+                                    <i class="fas fa-camera"></i> Capture & Scan
+                                </button>
+                                <button type="button" class="btn btn-secondary" onclick="stopWebcamScan()">
+                                    <i class="fas fa-stop"></i> Stop Camera
+                                </button>
+                            </div>
+                            <div id="webcam-status">Camera is starting...</div>
+                        </div>
+                        
+                        <div id="upload-preview" style="display: none; margin-top: 20px;">
+                            <h5>Uploaded Image Preview:</h5>
+                            <img id="uploaded-image-preview" src="" alt="Uploaded QR Image">
+                            <button type="button" class="btn btn-primary" onclick="processUploadedImage()">
+                                <i class="fas fa-search"></i> Scan QR from Image
+                            </button>
+                        </div>
+                        
+                        <div id="qr-validation-result" style="margin-top: 20px;"></div>
+                        
+                        <div id="qr-preview-register" style="display: none; margin-top: 20px;">
+                            <h5><i class="fas fa-user-check"></i> Aadhaar Information Found:</h5>
+                            <div id="qr-data-preview"></div>
+                        </div>
+                    </div>
+
+                    <div class="form-group" style="margin-top: 20px;">
+                        <div class="terms">
+                            <input type="checkbox" id="terms" required>
+                            <label for="terms" style="display: inline; font-size: 0.9rem;">
+                                I confirm that the Aadhaar information is correct and belongs to me
+                            </label>
+                        </div>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary btn-full" id="register-submit" disabled>
+                        <i class="fas fa-user-plus"></i> Complete Registration
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <div id="dashboard-page" class="page">
+            <div class="header">
+                <button class="btn-back" onclick="logout()">
+                    <i class="fas fa-sign-out-alt"></i> Logout
+                </button>
+                <h2>Dashboard</h2>
+                <p id="welcome-message"></p>
+                <div id="verification-badge"></div>
+            </div>
+
+            <div class="dashboard-content">
+                <div class="user-info-card">
+                    <h3><i class="fas fa-user-circle"></i> Account Information</h3>
+                    <div id="user-details">
+                        <p><i class="fas fa-user"></i> <strong>Username:</strong> <span id="display-username"></span></p>
+                        <p><i class="fas fa-id-card"></i> <strong>Aadhaar Status:</strong> <span id="aadhaar-status"></span></p>
+                        <p><i class="fas fa-hashtag"></i> <strong>Aadhaar Number:</strong> <span id="display-aadhaar"></span></p>
+                    </div>
+                </div>
+                
+                <div class="qr-section">
+                    <h3><i class="fas fa-qrcode"></i> Update Aadhaar QR Code</h3>
+                    <p class="note">You can update your Aadhaar information using any method below.</p>
+                    
+                    <div class="scanning-options">
+                        <div class="scan-option">
+                            <h5><i class="fas fa-camera"></i> Webcam Scan</h5>
+                            <button type="button" class="btn btn-primary" onclick="dashboardWebcamScan()">
+                                <i class="fas fa-video"></i> Scan with Webcam
+                            </button>
+                        </div>
+                        
+                        <div class="scan-option">
+                            <h5><i class="fas fa-upload"></i> Upload Image</h5>
+                            <div class="form-group">
+                                <input type="file" id="dashboard-qr-file" accept="image/*">
+                                <button type="button" class="btn btn-secondary" onclick="dashboardUploadQR()">
+                                    <i class="fas fa-upload"></i> Upload & Scan
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <div class="scan-option">
+                            <h5><i class="fas fa-keyboard"></i> Manual Input</h5>
+                            <textarea id="dashboard-qr-text" rows="3" placeholder="Paste QR code text here..."></textarea>
+                            <button type="button" class="btn btn-secondary" onclick="dashboardUploadQRText()">
+                                <i class="fas fa-paper-plane"></i> Submit
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div id="dashboard-webcam-container" style="display: none; margin-top: 20px;">
+                        <div class="webcam-preview">
+                            <video id="dashboard-webcam-video" autoplay playsinline></video>
+                            <canvas id="dashboard-webcam-canvas" style="display: none;"></canvas>
+                        </div>
+                        <div class="webcam-controls">
+                            <button type="button" class="btn btn-primary" onclick="dashboardCaptureQR()">
+                                <i class="fas fa-camera"></i> Capture & Scan
+                            </button>
+                            <button type="button" class="btn btn-secondary" onclick="dashboardStopWebcam()">
+                                <i class="fas fa-stop"></i> Stop Camera
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div id="dashboard-upload-preview" style="display: none; margin-top: 20px;">
+                        <h5>Image Preview:</h5>
+                        <img id="dashboard-uploaded-image" src="" alt="Uploaded QR Image">
+                    </div>
+                    
+                    <div id="qr-result" class="qr-result" style="margin-top: 20px;"></div>
+                </div>
+                
+                <div id="qr-info-display" style="margin-top: 30px; display: none;">
+                    <h3><i class="fas fa-user-check"></i> Aadhaar Information</h3>
+                    <div id="qr-data"></div>
+                </div>
+            </div>
+        </div>
+
+        <div id="loading-modal" class="modal">
+            <div class="modal-content">
+                <div class="spinner"></div>
+                <p id="loading-text">Processing...</p>
+            </div>
+        </div>
+
+        <div id="message-modal" class="modal">
+            <div class="modal-content">
+                <div id="message-icon"></div>
+                <h3 id="message-title"></h3>
+                <p id="message-content"></p>
+                <button id="message-close" class="btn btn-primary">OK</button>
+            </div>
+        </div>
+
+        <div id="webcam-modal" class="modal">
+            <div class="modal-content" style="max-width: 800px;">
+                <h3><i class="fas fa-video"></i> Live QR Scanner</h3>
+                <div class="webcam-fullscreen">
+                    <video id="modal-webcam-video" autoplay playsinline></video>
+                    <div class="scanner-overlay">
+                        <div class="scanner-frame"></div>
+                        <div class="scanner-line"></div>
+                    </div>
+                </div>
+                <div class="webcam-instructions">
+                    <p><i class="fas fa-info-circle"></i> Position the QR code within the frame</p>
+                    <p>Scanner will automatically detect QR codes</p>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn btn-primary" onclick="captureFromModal()">
+                        <i class="fas fa-camera"></i> Capture Now
+                    </button>
+                    <button type="button" class="btn btn-secondary" onclick="closeWebcamModal()">
+                        <i class="fas fa-times"></i> Close
+                    </button>
+                </div>
+                <div id="modal-scan-result"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
