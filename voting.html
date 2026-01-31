@@ -246,6 +246,7 @@
                     <div class="candidate-info">
                         <h4>${candidate.name}</h4>
                         <p class="candidate-party">${candidate.party}</p>
+                        <p><small>ID: ${candidate.candidate_id}</small></p>
                     </div>
                     <button class="btn btn-primary" onclick="selectCandidate(${candidate.candidate_id}, '${candidate.name}', '${candidate.party}')">
                         <i class="fas fa-vote-yea"></i> Vote
@@ -391,6 +392,7 @@
             background: #f8f9fa;
             border-radius: 15px;
             display: inline-block;
+            margin-bottom: 5px;
         }
         
         .vote-actions {
@@ -409,6 +411,45 @@
         
         .vote-info p {
             margin: 5px 0;
+        }
+        
+        .validation-error {
+            color: #dc3545;
+            padding: 15px;
+            background: #fff5f5;
+            border-radius: 8px;
+            border: 2px solid #dc3545;
+            margin: 15px 0;
+        }
+        
+        .validation-success {
+            color: #28a745;
+            padding: 15px;
+            background: #f0f8ff;
+            border-radius: 8px;
+            border: 2px solid #28a745;
+            margin: 15px 0;
+        }
+        
+        .success-message {
+            color: #28a745;
+            padding: 15px;
+            background: #f0f8ff;
+            border-radius: 8px;
+            border: 2px solid #28a745;
+            margin: 15px 0;
+        }
+        
+        @media (max-width: 768px) {
+            .candidate-card {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 15px;
+            }
+            
+            .candidate-card button {
+                align-self: flex-end;
+            }
         }
     </style>
 </body>

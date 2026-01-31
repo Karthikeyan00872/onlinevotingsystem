@@ -290,85 +290,6 @@ def scan_qr_from_image_file(file_path: str) -> str:
         print(f"QR scanning error: {str(e)}")
         return ""
 
-def capture_qr_from_webcam():
-    """Capture QR code using webcam with live preview capability"""
-    if not QR_SCANNING_AVAILABLE:
-        return {"success": False, "message": "QR scanning libraries not available"}
-    
-    try:
-        cap = cv2.VideoCapture(0)
-        if not cap.isOpened():
-            return {"success": False, "message": "Cannot access webcam"}
-        
-        # Set camera properties for better QR detection
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-        cap.set(cv2.CAP_PROP_BRIGHTNESS, 0.5)
-        cap.set(cv2.CAP_PROP_CONTRAST, 0.5)
-        
-        qr_data = ""
-        frames_processed = 0
-        max_frames = 300  # Process up to 300 frames (30 seconds at 10fps)
-        
-        while frames_processed < max_frames:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            
-            # Resize for faster processing
-            frame = cv2.resize(frame, (640, 480))
-            
-            # Convert to grayscale
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            
-            # Apply adaptive thresholding
-            processed = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                            cv2.THRESH_BINARY, 11, 2)
-            
-            decoded_objects = decode(processed)
-            
-            for obj in decoded_objects:
-                if obj.type == 'QRCODE':
-                    qr_data = obj.data.decode('utf-8')
-                    
-                    # Draw rectangle around QR code
-                    points = obj.polygon
-                    if len(points) == 4:
-                        pts = np.array(points, np.int32)
-                        pts = pts.reshape((-1, 1, 2))
-                        cv2.polylines(frame, [pts], True, (0, 255, 0), 3)
-                    
-                    # Add text
-                    cv2.putText(frame, "QR Code Detected!", (50, 50), 
-                              cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-                    
-                    # Show frame for a moment
-                    cv2.imshow('QR Scanner - Press Q to exit', frame)
-                    cv2.waitKey(1000)
-                    
-                    cap.release()
-                    cv2.destroyAllWindows()
-                    return {"success": True, "qr_data": qr_data}
-            
-            # Show live feed
-            cv2.imshow('QR Scanner - Press Q to exit', frame)
-            
-            # Press 'q' to quit early
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-            
-            frames_processed += 1
-        
-        cap.release()
-        cv2.destroyAllWindows()
-        return {"success": False, "message": "No QR code detected"}
-        
-    except Exception as e:
-        if 'cap' in locals():
-            cap.release()
-        cv2.destroyAllWindows()
-        return {"success": False, "message": f"Webcam error: {str(e)}"}
-
 def allowed_file(filename):
     """Check if file extension is allowed"""
     return '.' in filename and \
@@ -678,200 +599,6 @@ def login():
     except Exception as e:
         return jsonify({'success': False, 'message': f'Login failed: {str(e)}'}), 500
 
-@app.route('/api/upload_qr', methods=['POST'])
-def upload_qr():
-    """Upload QR image and process"""
-    try:
-        username = request.form.get('username')
-        if not username:
-            return jsonify({'success': False, 'message': 'Please login first'}), 401
-        
-        if 'qr_image' not in request.files:
-            return jsonify({'success': False, 'message': 'No QR image file provided'}), 400
-        
-        file = request.files['qr_image']
-        if file.filename == '':
-            return jsonify({'success': False, 'message': 'No file selected'}), 400
-        
-        if not allowed_file(file.filename):
-            return jsonify({
-                'success': False, 
-                'message': f'File type not allowed. Allowed types: {", ".join(ALLOWED_EXTENSIONS)}'
-            }), 400
-        
-        # Save temporary file
-        temp_dir = tempfile.gettempdir()
-        temp_path = os.path.join(temp_dir, secure_filename(file.filename))
-        file.save(temp_path)
-        
-        print(f"Processing QR image for user {username}: {file.filename}")
-        
-        # Scan QR code
-        qr_data = scan_qr_from_image_file(temp_path)
-        
-        if not qr_data:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-            return jsonify({'success': False, 'message': 'No QR code found in image'}), 400
-        
-        # Decode QR data
-        decoder = AadhaarQRDecoder(qr_data)
-        decoded_data = decoder.decode()
-        
-        # Check if this Aadhaar belongs to another user
-        aadhaar_number = decoded_data.get('uid')
-        if aadhaar_number and MONGODB_AVAILABLE:
-            existing_user = users_collection.find_one({'aadhaar_number': aadhaar_number})
-            if existing_user and existing_user['username'] != username:
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-                return jsonify({
-                    'success': False,
-                    'message': f'This Aadhaar is already registered to user: {existing_user["username"]}'
-                }), 400
-        
-        # Save to database
-        if MONGODB_AVAILABLE:
-            update_data = {
-                'qr_data': decoded_data,
-                'qr_updated': datetime.now()
-            }
-            if aadhaar_number:
-                update_data['aadhaar_number'] = aadhaar_number
-                update_data['is_verified'] = True
-            
-            users_collection.update_one(
-                {'username': username},
-                {'$set': update_data}
-            )
-        
-        # Save the uploaded file permanently
-        if aadhaar_number:
-            # Save with Aadhaar number as filename
-            filename = f"{aadhaar_number}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{file.filename.split('.')[-1]}"
-            file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-            file.seek(0)  # Reset file pointer
-            file.save(file_path)
-            print(f"Saved uploaded file: {file_path}")
-        
-        # Clean up temporary file
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-        
-        return jsonify({
-            'success': True,
-            'message': 'QR image processed successfully',
-            'filename': file.filename,
-            'qr_data_length': len(qr_data),
-            'data': decoded_data
-        })
-        
-    except Exception as e:
-        return jsonify({'success': False, 'message': f'Processing failed: {str(e)}'}), 500
-
-@app.route('/api/upload_qr_text', methods=['POST'])
-def upload_qr_text():
-    """Upload QR text and process"""
-    try:
-        data = request.get_json()
-        if not data:
-            return jsonify({'success': False, 'message': 'No data provided'}), 400
-        
-        username = data.get('username')
-        qr_text = data.get('qr_text', '').strip()
-        
-        if not username:
-            return jsonify({'success': False, 'message': 'Please login first'}), 401
-        
-        if not qr_text:
-            return jsonify({'success': False, 'message': 'QR text is empty'}), 400
-        
-        print(f"Processing QR text for user {username}")
-        
-        # Decode QR data
-        decoder = AadhaarQRDecoder(qr_text)
-        decoded_data = decoder.decode()
-        
-        # Check if this Aadhaar belongs to another user
-        aadhaar_number = decoded_data.get('uid')
-        if aadhaar_number and MONGODB_AVAILABLE:
-            existing_user = users_collection.find_one({'aadhaar_number': aadhaar_number})
-            if existing_user and existing_user['username'] != username:
-                return jsonify({
-                    'success': False,
-                    'message': f'This Aadhaar is already registered to user: {existing_user["username"]}'
-                }), 400
-        
-        # Save to database
-        if MONGODB_AVAILABLE:
-            update_data = {
-                'qr_data': decoded_data,
-                'qr_updated': datetime.now()
-            }
-            if aadhaar_number:
-                update_data['aadhaar_number'] = aadhaar_number
-                update_data['is_verified'] = True
-            
-            users_collection.update_one(
-                {'username': username},
-                {'$set': update_data}
-            )
-        
-        return jsonify({
-            'success': True,
-            'message': 'QR text processed successfully',
-            'data': decoded_data
-        })
-        
-    except Exception as e:
-        return jsonify({'success': False, 'message': f'Processing failed: {str(e)}'}), 500
-
-@app.route('/api/get_qr_info', methods=['POST'])
-def get_qr_info():
-    """Get user's QR information"""
-    try:
-        data = request.get_json()
-        if not data:
-            return jsonify({'success': False, 'message': 'No data provided'}), 400
-        
-        username = data.get('username')
-        if not username:
-            return jsonify({'success': False, 'message': 'Please login first'}), 401
-        
-        if MONGODB_AVAILABLE:
-            user = users_collection.find_one({'username': username})
-            if user and 'qr_data' in user:
-                return jsonify({
-                    'success': True,
-                    'message': 'QR data found',
-                    'data': user['qr_data'],
-                    'aadhaar_number': user.get('aadhaar_number'),
-                    'is_verified': user.get('is_verified', False)
-                })
-            else:
-                return jsonify({
-                    'success': False,
-                    'message': 'No QR data found'
-                })
-        else:
-            # Mock data
-            return jsonify({
-                'success': True,
-                'message': 'Mock QR data',
-                'data': {
-                    'name': 'John Doe',
-                    'uid': '999999999999',
-                    'dob': '01/01/1990',
-                    'gender': 'M',
-                    'email': 'test@example.com'
-                },
-                'aadhaar_number': '999999999999',
-                'is_verified': True
-            })
-            
-    except Exception as e:
-        return jsonify({'success': False, 'message': f'Failed to get QR info: {str(e)}'}), 500
-
 # ========== Voting System Routes ==========
 
 @app.route('/api/admin_login', methods=['POST'])
@@ -1103,9 +830,9 @@ def get_voting_results():
             return jsonify({
                 'success': True,
                 'results': [
-                    {'candidate_name': 'John Smith', 'candidate_party': 'National Party', 'total_votes': 150},
-                    {'candidate_name': 'Emma Johnson', 'candidate_party': 'Progressive Alliance', 'total_votes': 120},
-                    {'candidate_name': 'Michael Brown', 'candidate_party': 'Unity Front', 'total_votes': 80}
+                    {'_id': 1, 'candidate_name': 'John Smith', 'candidate_party': 'National Party', 'total_votes': 150},
+                    {'_id': 2, 'candidate_name': 'Emma Johnson', 'candidate_party': 'Progressive Alliance', 'total_votes': 120},
+                    {'_id': 3, 'candidate_name': 'Michael Brown', 'candidate_party': 'Unity Front', 'total_votes': 80}
                 ],
                 'statistics': {
                     'total_votes': 350,
@@ -1171,6 +898,52 @@ def add_candidate():
     except Exception as e:
         return jsonify({'success': False, 'message': f'Failed to add candidate: {str(e)}'}), 500
 
+@app.route('/api/admin/remove_candidate', methods=['POST'])
+def remove_candidate():
+    """Remove candidate (admin only)"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'success': False, 'message': 'No data provided'}), 400
+        
+        candidate_id = data.get('candidate_id')
+        
+        if not candidate_id:
+            return jsonify({'success': False, 'message': 'Candidate ID required'}), 400
+        
+        if MONGODB_AVAILABLE:
+            # Check if candidate exists
+            candidate = candidates_collection.find_one({'candidate_id': candidate_id})
+            if not candidate:
+                return jsonify({'success': False, 'message': 'Candidate not found'}), 404
+            
+            # Check if candidate has votes
+            vote_count = votes_collection.count_documents({'candidate_id': candidate_id})
+            if vote_count > 0:
+                return jsonify({
+                    'success': False, 
+                    'message': f'Cannot remove candidate with {vote_count} vote(s).'
+                }), 400
+            
+            # Remove candidate
+            result = candidates_collection.delete_one({'candidate_id': candidate_id})
+            
+            if result.deleted_count > 0:
+                return jsonify({
+                    'success': True,
+                    'message': f'Candidate {candidate.get("name")} removed successfully'
+                })
+            else:
+                return jsonify({'success': False, 'message': 'Failed to remove candidate'}), 400
+        else:
+            return jsonify({
+                'success': True,
+                'message': 'Mock candidate removed'
+            })
+            
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'Failed to remove candidate: {str(e)}'}), 500
+
 @app.route('/api/get_vote_history', methods=['POST'])
 def get_vote_history():
     """Get user's vote history"""
@@ -1223,12 +996,12 @@ def index():
     return send_from_directory('.', 'index.html')
 
 @app.route('/voting')
-def voting_page():
+def voting():
     """Voting page"""
     return send_from_directory('.', 'voting.html')
 
 @app.route('/admin')
-def admin_page():
+def admin():
     """Admin page"""
     return send_from_directory('.', 'admin.html')
 
@@ -1306,28 +1079,6 @@ def upload_file():
     except Exception as e:
         return jsonify({'success': False, 'message': f'File processing failed: {str(e)}'}), 500
 
-@app.route('/api/webcam_scan', methods=['GET'])
-def webcam_scan():
-    """Scan QR code using webcam"""
-    result = capture_qr_from_webcam()
-    return jsonify(result)
-
-@app.route('/api/test_webcam', methods=['GET'])
-def test_webcam():
-    """Test if webcam is available"""
-    if not QR_SCANNING_AVAILABLE:
-        return jsonify({'success': False, 'message': 'QR scanning libraries not available'})
-    
-    try:
-        cap = cv2.VideoCapture(0)
-        if cap.isOpened():
-            cap.release()
-            return jsonify({'success': True, 'message': 'Webcam is available'})
-        else:
-            return jsonify({'success': False, 'message': 'Webcam not accessible'})
-    except Exception as e:
-        return jsonify({'success': False, 'message': f'Webcam test failed: {str(e)}'})
-
 @app.route('/api/test', methods=['GET'])
 def test_api():
     """Test endpoint"""
@@ -1335,7 +1086,6 @@ def test_api():
         'status': 'Online',
         'qr_scanning': 'Available' if QR_SCANNING_AVAILABLE else 'Unavailable',
         'mongodb': 'Connected' if MONGODB_AVAILABLE else 'Not connected',
-        'webcam': 'Available' if QR_SCANNING_AVAILABLE else 'Unavailable',
         'timestamp': datetime.now().isoformat()
     }
     return jsonify(test_data)
@@ -1345,28 +1095,6 @@ def health_check():
     """Health check endpoint"""
     return jsonify({'status': 'healthy', 'timestamp': datetime.now().isoformat()})
 
-@app.route('/api/sample', methods=['GET'])
-def get_sample_qr():
-    """Get sample QR data for testing"""
-    samples = {
-        'xml_sample': '''<?xml version="1.0" encoding="UTF-8"?>
-<PrintLetterBarcodeData uid="999999999999" name="John Doe" gender="M" 
-    yob="1990" co="Test Company" house="123" street="Main Street" 
-    loc="Downtown" vtc="Test Village" po="Test PO" dist="Test District" 
-    state="Test State" pc="123456" dob="01/01/1990" email="test@example.com" 
-    mobile="9876543210" />''',
-        
-        'text_sample': '999999999999|John Doe|01/01/1990|M|Test Company|123|Main Street||Downtown|Test Village|Test District|Test State|123456|test@example.com|9876543210',
-        
-        'compressed_sample': 'V'  # Compressed format needs actual encoding
-    }
-    
-    return jsonify({
-        'success': True,
-        'samples': samples,
-        'instructions': 'Use /api/decode endpoint to decode these samples'
-    })
-
 @app.route('/uploads/<filename>')
 def uploaded_file(filename):
     """Serve uploaded files"""
@@ -1374,11 +1102,10 @@ def uploaded_file(filename):
 
 if __name__ == '__main__':
     print("\n" + "="*60)
-    print("Enhanced Aadhaar QR Decoding Server with Voting System")
+    print("Online Voting System with Aadhaar QR Verification")
     print("="*60)
     print(f"MongoDB: {'✓ Connected' if MONGODB_AVAILABLE else '✗ Not connected'}")
     print(f"QR Scanning: {'✓ Available' if QR_SCANNING_AVAILABLE else '✗ Unavailable'}")
-    print(f"Webcam: {'✓ Available' if QR_SCANNING_AVAILABLE else '✗ Unavailable'}")
     print(f"Upload Folder: {os.path.abspath(UPLOAD_FOLDER)}")
     print("\nAvailable Endpoints:")
     print("  GET  /                         - Main page")
@@ -1391,18 +1118,14 @@ if __name__ == '__main__':
     print("  POST /api/submit_vote          - Submit vote")
     print("  GET  /api/admin/get_results    - Get voting results (admin)")
     print("  POST /api/admin/add_candidate  - Add candidate (admin)")
+    print("  POST /api/admin/remove_candidate - Remove candidate (admin)")
     print("  POST /api/validate_aadhaar     - Validate Aadhaar QR")
     print("  POST /api/scan_uploaded_image  - Scan QR from uploaded image")
     print("  POST /api/decode               - Decode QR text data")
     print("  POST /api/upload               - Upload QR image file")
-    print("  POST /api/upload_qr            - Upload QR image (with user auth)")
-    print("  POST /api/upload_qr_text       - Upload QR text")
-    print("  POST /api/get_qr_info          - Get user QR info")
-    print("  GET  /api/webcam_scan          - Scan QR using webcam")
-    print("  GET  /api/test_webcam          - Test webcam availability")
+    print("  POST /api/get_vote_history     - Get vote history")
     print("  GET  /api/test                 - Test server status")
     print("  GET  /api/health               - Health check")
-    print("  GET  /api/sample               - Get sample data")
     print("  GET  /uploads/<filename>       - Access uploaded files")
     print("\nStarting server...")
     print("="*60)
