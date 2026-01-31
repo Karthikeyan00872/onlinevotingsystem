@@ -1,1134 +1,991 @@
-from flask import Flask, request, jsonify, send_from_directory
+# app.py
+from flask import Flask, render_template, request, jsonify, redirect, url_for, session
 from flask_cors import CORS
 from pymongo import MongoClient
-from werkzeug.security import generate_password_hash, check_password_hash
+from bson import ObjectId
 import os
 import json
+import hashlib
 import base64
 import xml.etree.ElementTree as ET
-import zlib
 import re
-from werkzeug.utils import secure_filename
-from datetime import datetime
-import tempfile
-import numpy as np
-from bson import ObjectId
+import zlib
+from datetime import datetime, timedelta
+from functools import wraps
+import uuid
 
-app = Flask(__name__, static_folder='.', static_url_path='')
-CORS(app)
-
-# MongoDB Connection
-try:
-    MONGO_URI = os.environ.get('MONGO_URI', 'mongodb://localhost:27017/')
-    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-    db = client['online_voting']
-    users_collection = db['users']
-    votes_collection = db['votes']
-    candidates_collection = db['candidates']
-    admin_collection = db['admins']
-    
-    # Create indexes
-    users_collection.create_index('username', unique=True)
-    users_collection.create_index('aadhaar_number', unique=True, sparse=True)
-    
-    MONGODB_AVAILABLE = True
-    print("✓ MongoDB connected successfully")
-except Exception as e:
-    MONGODB_AVAILABLE = False
-    print(f"✗ MongoDB connection failed: {str(e)}")
-    print("Note: Some features will use mock data")
-
-# QR Scanning functionality
+# Try to import QR scanning libraries
 try:
     import cv2
+    import numpy as np
     from pyzbar.pyzbar import decode
     QR_SCANNING_AVAILABLE = True
-    print("✓ QR scanning libraries loaded")
-except ImportError as e:
+except ImportError:
     QR_SCANNING_AVAILABLE = False
-    print(f"✗ QR scanning unavailable: {str(e)}")
-    print("Install: pip install opencv-python pyzbar")
+    print("Warning: QR scanning libraries not available. Install with: pip install opencv-python pyzbar")
 
-# File upload configuration
-UPLOAD_FOLDER = 'uploads'
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'bmp', 'pdf'}
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
-
+# Import AadhaarQRDecoder from aadhar1.py concept
 class AadhaarQRDecoder:
-    """Enhanced Aadhaar QR Decoder with multiple format support"""
+    """Class to decode Aadhaar QR code data"""
     
     def __init__(self, qr_data: str):
         self.qr_data = qr_data.strip()
         self.decoded_data = {}
-    
-    def decode(self) -> dict:
-        """Main decoding method"""
-        print(f"Decoding QR data (length: {len(self.qr_data)})")
         
-        try:
-            if self._is_xml_format():
-                print("Detected: XML format")
-                return self._parse_xml_format()
-            elif self._is_compressed_format():
-                print("Detected: Compressed format (V...)")
-                return self._parse_compressed_format()
-            elif self._is_plain_text_format():
-                print("Detected: Plain text format (pipe separated)")
-                return self._parse_plain_text_format()
-            else:
-                print("Detected: Unknown format, attempting extraction")
-                return self._extract_data_from_text()
-        except Exception as e:
-            print(f"Decoding error: {str(e)}")
-            return {'error': f'Decoding failed: {str(e)}', 'raw_data': self.qr_data[:200]}
+    def decode(self) -> dict:
+        """Decode QR data based on format"""
+        if self._is_xml_format():
+            return self._parse_xml_format()
+        elif self._is_compressed_format():
+            return self._parse_compressed_format()
+        elif self._is_plain_text_format():
+            return self._parse_plain_text_format()
+        else:
+            raise ValueError("Unsupported QR code format")
     
     def _is_xml_format(self) -> bool:
-        return self.qr_data.startswith('<?xml') or self.qr_data.startswith('<PrintLetterBarcodeData')
+        return (self.qr_data.startswith('<?xml') or 
+                self.qr_data.startswith('<PrintLetterBarcodeData'))
     
     def _is_compressed_format(self) -> bool:
-        return self.qr_data.startswith('V') and len(self.qr_data) > 50
+        return self.qr_data.startswith('V')
     
     def _is_plain_text_format(self) -> bool:
         return '|' in self.qr_data and not self.qr_data.startswith('<?xml')
     
     def _parse_xml_format(self) -> dict:
         try:
-            # Ensure XML declaration exists
             xml_data = self.qr_data
             if not xml_data.startswith('<?xml'):
                 xml_data = '<?xml version="1.0" encoding="UTF-8"?>' + xml_data
             
             root = ET.fromstring(xml_data)
             data = {}
-            
-            # Extract all attributes
             for attr_name, attr_value in root.attrib.items():
                 data[attr_name.lower()] = attr_value
             
-            # Standardize field names
-            return self._standardize_fields(data)
-        except Exception as e:
-            raise ValueError(f"XML parsing error: {str(e)}")
+            return data
+        except ET.ParseError as e:
+            raise ValueError(f"Failed to parse XML: {e}")
     
     def _parse_compressed_format(self) -> dict:
         try:
-            # Remove leading 'V' and decode
             compressed_data = base64.b64decode(self.qr_data[1:])
-            
-            # Decompress (zlib)
             xml_data = zlib.decompress(compressed_data, 15 + 32).decode('utf-8')
-            print(f"Decompressed XML length: {len(xml_data)}")
-            
-            # Now parse the XML
             self.qr_data = xml_data
             return self._parse_xml_format()
         except Exception as e:
-            raise ValueError(f"Decompression error: {str(e)}")
+            raise ValueError(f"Failed to decode compressed data: {e}")
     
     def _parse_plain_text_format(self) -> dict:
         try:
             parts = self.qr_data.split('|')
-            print(f"Found {len(parts)} pipe-separated parts")
-            
-            # Map fields according to Aadhaar QR specification
-            field_mapping = [
-                'uid', 'name', 'dob', 'gender', 'co', 'house', 
-                'street', 'landmark', 'locality', 'vtc', 'dist', 
-                'state', 'pc', 'email', 'mobile'
-            ]
-            
-            data = {}
-            for i, part in enumerate(parts):
-                if i < len(field_mapping) and part:
-                    data[field_mapping[i]] = part
-            
-            # Build full address
-            address_parts = []
-            for field in ['co', 'house', 'street', 'landmark', 'locality', 'vtc', 'dist', 'state', 'pc']:
-                if field in data and data[field]:
-                    address_parts.append(data[field])
-            
-            # Create standardized output
-            standardized = {
-                'uid': data.get('uid', ''),
-                'name': data.get('name', ''),
-                'dob': data.get('dob', ''),
-                'gender': data.get('gender', ''),
-                'address': ', '.join(filter(None, address_parts)),
-                'email': data.get('email', ''),
-                'mobile': data.get('mobile', ''),
-                'raw_format': 'plain_text'
+            data = {
+                'uid': parts[0] if len(parts) > 0 else '',
+                'name': parts[1] if len(parts) > 1 else '',
+                'dob': parts[2] if len(parts) > 2 else '',
+                'gender': parts[3] if len(parts) > 3 else '',
+                'co': parts[4] if len(parts) > 4 else '',
+                'house': parts[5] if len(parts) > 5 else '',
+                'street': parts[6] if len(parts) > 6 else '',
+                'landmark': parts[7] if len(parts) > 7 else '',
+                'locality': parts[8] if len(parts) > 8 else '',
+                'vtc': parts[9] if len(parts) > 9 else '',
+                'dist': parts[10] if len(parts) > 10 else '',
+                'state': parts[11] if len(parts) > 11 else '',
+                'pc': parts[12] if len(parts) > 12 else '',
+                'email': parts[13] if len(parts) > 13 else '',
+                'mobile': parts[14] if len(parts) > 14 else '',
             }
-            
-            return {k: v for k, v in standardized.items() if v}
+            return {k: v for k, v in data.items() if v}
         except Exception as e:
-            raise ValueError(f"Text parsing error: {str(e)}")
+            raise ValueError(f"Failed to parse plain text format: {e}")
+
+# Initialize Flask app
+app = Flask(__name__, static_folder='.', static_url_path='')
+app.secret_key = 'your-secret-key-here-change-in-production'
+CORS(app)
+
+# MongoDB connection
+try:
+    # Connect to MongoDB (default: localhost:27017)
+    client = MongoClient('mongodb://localhost:27017/', serverSelectionTimeoutMS=5000)
+    db = client['online_voting']
     
-    def _extract_data_from_text(self) -> dict:
-        """Extract possible Aadhaar information from any text"""
-        result = {'raw_data': self.qr_data[:500]}
-        
-        # Find 12-digit Aadhaar number
-        uid_match = re.search(r'\b\d{4}\s?\d{4}\s?\d{4}\b', self.qr_data)
-        if uid_match:
-            result['uid'] = uid_match.group().replace(' ', '')
-        
-        # Find name (uppercase words)
-        name_match = re.search(r'([A-Z][A-Z\s]+[A-Z])', self.qr_data[:100])
-        if name_match:
-            result['name'] = name_match.group().strip()
-        
-        # Find date
-        date_patterns = [
-            r'\d{2}/\d{2}/\d{4}',
-            r'\d{2}-\d{2}-\d{4}',
-            r'\d{4}/\d{2}/\d{2}',
-            r'\d{4}-\d{2}-\d{2}'
-        ]
-        for pattern in date_patterns:
-            date_match = re.search(pattern, self.qr_data)
-            if date_match:
-                result['dob'] = date_match.group()
-                break
-        
-        # Find gender
-        if re.search(r'\b(M|MALE|F|FEMALE)\b', self.qr_data, re.IGNORECASE):
-            gender_match = re.search(r'\b(M|MALE|F|FEMALE)\b', self.qr_data, re.IGNORECASE)
-            result['gender'] = gender_match.group().upper()
-        
-        return result
+    # Collections
+    users_collection = db['users']
+    admins_collection = db['admins']
+    candidates_collection = db['candidates']
+    votes_collection = db['votes']
     
-    def _standardize_fields(self, data: dict) -> dict:
-        """Standardize field names"""
-        mapping = {
-            'uid': ['uid', 'aadhaar', 'aadhaarnumber'],
-            'name': ['name', 'n'],
-            'dob': ['dob', 'dateofbirth', 'yob'],
-            'gender': ['gender', 'g', 'sex'],
-            'email': ['email', 'e'],
-            'mobile': ['mobile', 'phone', 'm', 'contactno']
+    # Test the connection
+    client.server_info()
+    mongodb_connected = True
+    print("✅ Successfully connected to MongoDB")
+except Exception as e:
+    print(f"❌ Error connecting to MongoDB: {e}")
+    print("⚠️ Using in-memory storage as fallback")
+    users_collection = None
+    admins_collection = None
+    candidates_collection = None
+    votes_collection = None
+    mongodb_connected = False
+
+# In-memory fallback storage (if MongoDB not available)
+if not mongodb_connected:
+    users_db = {}
+    admins_db = {}
+    candidates_db = {}
+    votes_db = []
+
+# Helper functions for MongoDB/fallback
+def get_user(username):
+    """Get user from MongoDB or fallback"""
+    if mongodb_connected and users_collection is not None:
+        return users_collection.find_one({"username": username})
+    elif not mongodb_connected:
+        return users_db.get(username)
+    return None
+
+def get_admin(username):
+    """Get admin from MongoDB or fallback"""
+    if mongodb_connected and admins_collection is not None:
+        return admins_collection.find_one({"username": username})
+    elif not mongodb_connected:
+        return admins_db.get(username)
+    return None
+
+def get_candidate(candidate_id):
+    """Get candidate from MongoDB or fallback"""
+    if mongodb_connected and candidates_collection is not None:
+        return candidates_collection.find_one({"candidate_id": candidate_id})
+    elif not mongodb_connected:
+        return candidates_db.get(candidate_id)
+    return None
+
+def get_all_candidates():
+    """Get all candidates from MongoDB or fallback"""
+    if mongodb_connected and candidates_collection is not None:
+        return list(candidates_collection.find({}))
+    elif not mongodb_connected:
+        return list(candidates_db.values())
+    return []
+
+def get_all_votes():
+    """Get all votes from MongoDB or fallback"""
+    if mongodb_connected and votes_collection is not None:
+        return list(votes_collection.find({}))
+    elif not mongodb_connected:
+        return votes_db.copy()
+    return []
+
+def create_user(user_data):
+    """Create new user in MongoDB or fallback"""
+    if mongodb_connected and users_collection is not None:
+        result = users_collection.insert_one(user_data)
+        return result.inserted_id
+    elif not mongodb_connected:
+        username = user_data['username']
+        users_db[username] = user_data
+        return username
+    return None
+
+def create_admin(admin_data):
+    """Create new admin in MongoDB or fallback"""
+    if mongodb_connected and admins_collection is not None:
+        result = admins_collection.insert_one(admin_data)
+        return result.inserted_id
+    elif not mongodb_connected:
+        username = admin_data['username']
+        admins_db[username] = admin_data
+        return username
+    return None
+
+def create_candidate(candidate_data):
+    """Create new candidate in MongoDB or fallback"""
+    if mongodb_connected and candidates_collection is not None:
+        result = candidates_collection.insert_one(candidate_data)
+        return result.inserted_id
+    elif not mongodb_connected:
+        candidate_id = candidate_data['candidate_id']
+        candidates_db[candidate_id] = candidate_data
+        return candidate_id
+    return None
+
+def create_vote(vote_data):
+    """Create new vote in MongoDB or fallback"""
+    if mongodb_connected and votes_collection is not None:
+        result = votes_collection.insert_one(vote_data)
+        return result.inserted_id
+    elif not mongodb_connected:
+        votes_db.append(vote_data)
+        return vote_data['vote_id']
+    return None
+
+def update_user(username, update_data):
+    """Update user in MongoDB or fallback"""
+    if mongodb_connected and users_collection is not None:
+        users_collection.update_one({"username": username}, {"$set": update_data})
+    elif not mongodb_connected and username in users_db:
+        users_db[username].update(update_data)
+
+def update_candidate(candidate_id, update_data):
+    """Update candidate in MongoDB or fallback"""
+    if mongodb_connected and candidates_collection is not None:
+        candidates_collection.update_one({"candidate_id": candidate_id}, {"$set": update_data})
+    elif not mongodb_connected and candidate_id in candidates_db:
+        candidates_db[candidate_id].update(update_data)
+
+def get_total_voters():
+    """Get total number of voters"""
+    if mongodb_connected and users_collection is not None:
+        return users_collection.count_documents({"role": "voter"})
+    elif not mongodb_connected:
+        return sum(1 for user in users_db.values() if user.get('role') == 'voter')
+    return 0
+
+def get_total_votes():
+    """Get total number of votes"""
+    if mongodb_connected and votes_collection is not None:
+        return votes_collection.count_documents({})
+    elif not mongodb_connected:
+        return len(votes_db)
+    return 0
+
+def get_total_candidates():
+    """Get total number of active candidates"""
+    if mongodb_connected and candidates_collection is not None:
+        return candidates_collection.count_documents({"is_active": True})
+    elif not mongodb_connected:
+        return sum(1 for c in candidates_db.values() if c.get('is_active', True))
+    return 0
+
+# Initialize default admin if not exists
+def init_default_admin():
+    """Initialize default admin account"""
+    print("🔍 Checking for admin account...")
+    
+    if mongodb_connected and admins_collection is not None:
+        admin = admins_collection.find_one({"username": "admin"})
+        if admin:
+            print("✅ Admin account found in MongoDB")
+            return True
+        else:
+            print("⚠️ Admin account not found, creating...")
+            admin_data = {
+                "username": "admin",
+                "password": "admin123",
+                "role": "admin",
+                "full_name": "System Administrator",
+                "created_at": datetime.now()
+            }
+            try:
+                admins_collection.insert_one(admin_data)
+                print("✅ Admin account created in MongoDB")
+                return True
+            except Exception as e:
+                print(f"❌ Failed to create admin in MongoDB: {e}")
+                return False
+    elif not mongodb_connected:
+        if "admin" in admins_db:
+            print("✅ Admin account found in memory")
+            return True
+        else:
+            print("⚠️ Admin account not found, creating in memory...")
+            admins_db["admin"] = {
+                "username": "admin",
+                "password": "admin123",
+                "role": "admin",
+                "full_name": "System Administrator",
+                "created_at": datetime.now()
+            }
+            print("✅ Admin account created in memory")
+            return True
+    
+    return False
+
+def init_default_data():
+    """Initialize default test data"""
+    print("🔍 Initializing default data...")
+    
+    # Add test voter if not exists
+    if mongodb_connected and users_collection is not None:
+        if not users_collection.find_one({"username": "testvoter"}):
+            voter_data = {
+                "username": "testvoter",
+                "password": "test123",
+                "role": "voter",
+                "full_name": "Test Voter",
+                "aadhaar_number": "123456789012",
+                "is_verified": True,
+                "has_voted": False,
+                "created_at": datetime.now()
+            }
+            users_collection.insert_one(voter_data)
+            print("✅ Test voter account created")
+    elif not mongodb_connected and "testvoter" not in users_db:
+        users_db["testvoter"] = {
+            "username": "testvoter",
+            "password": "test123",
+            "role": "voter",
+            "full_name": "Test Voter",
+            "aadhaar_number": "123456789012",
+            "is_verified": True,
+            "has_voted": False
         }
-        
-        result = {}
-        for std_field, variants in mapping.items():
-            for variant in variants:
-                if variant in data:
-                    result[std_field] = data[variant]
-                    break
-        
-        # Build address
-        address_fields = ['co', 'house', 'street', 'loc', 'locality', 'vtc', 
-                         'po', 'dist', 'subdist', 'state', 'pc', 'address']
-        address_parts = []
-        for field in address_fields:
-            if field in data and data[field]:
-                address_parts.append(data[field])
-        
-        if address_parts:
-            result['address'] = ', '.join(address_parts)
-        
-        result['raw_format'] = 'xml'
-        return result
-
-def scan_qr_from_image_file(file_path: str) -> str:
-    """Scan QR code from image file with enhanced detection"""
-    if not QR_SCANNING_AVAILABLE:
-        print("QR scanning libraries not available")
-        return ""
+        print("✅ Test voter account created (in-memory)")
     
-    try:
-        # Read image
-        img = cv2.imread(file_path)
-        if img is None:
-            print(f"Cannot read image: {file_path}")
-            return ""
-        
-        print(f"Image dimensions: {img.shape}")
-        
-        # Convert to grayscale
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        
-        # Try different preprocessing methods
-        methods = [
-            ("Original", gray),
-            ("Binary", cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)[1]),
-            ("Adaptive Threshold", cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                               cv2.THRESH_BINARY, 11, 2)),
-            ("Blur + Threshold", cv2.threshold(cv2.GaussianBlur(gray, (5, 5), 0), 127, 255, cv2.THRESH_BINARY)[1])
-        ]
-        
-        for method_name, processed_img in methods:
-            print(f"Trying method: {method_name}")
-            decoded_objects = decode(processed_img)
-            
-            if decoded_objects:
-                for obj in decoded_objects:
-                    if obj.type == 'QRCODE':
-                        qr_data = obj.data.decode('utf-8')
-                        print(f"✓ Found QR code ({method_name})")
-                        print(f"Data length: {len(qr_data)}")
-                        return qr_data
-        
-        # If no QR found, try edge detection
-        print("Trying edge detection method")
-        edges = cv2.Canny(gray, 100, 200)
-        decoded_objects = decode(edges)
-        
-        if decoded_objects:
-            for obj in decoded_objects:
-                if obj.type == 'QRCODE':
-                    qr_data = obj.data.decode('utf-8')
-                    print(f"✓ Found QR code (Edge Detection)")
-                    return qr_data
-        
-        print("No QR code found")
-        return ""
-        
-    except Exception as e:
-        print(f"QR scanning error: {str(e)}")
-        return ""
-
-def allowed_file(filename):
-    """Check if file extension is allowed"""
-    return '.' in filename and \
-           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
-
-def create_default_admin():
-    """Create default admin user"""
-    try:
-        admin_exists = admin_collection.find_one({'username': 'admin'})
-        if not admin_exists:
-            hashed_password = generate_password_hash('admin@123')
-            admin_collection.insert_one({
-                'username': 'admin',
-                'password': hashed_password,
-                'role': 'superadmin',
-                'created_at': datetime.now()
-            })
-            print("✓ Default admin user created")
-    except Exception as e:
-        print(f"✗ Failed to create admin: {str(e)}")
-
-def create_sample_candidates():
-    """Create sample candidates"""
-    try:
-        candidates_exist = candidates_collection.count_documents({})
-        if candidates_exist == 0:
+    # Add default candidates if none exist
+    if mongodb_connected and candidates_collection is not None:
+        if candidates_collection.count_documents({}) == 0:
             candidates = [
-                {'candidate_id': 1, 'name': 'John Smith', 'party': 'National Party', 'is_active': True},
-                {'candidate_id': 2, 'name': 'Emma Johnson', 'party': 'Progressive Alliance', 'is_active': True},
-                {'candidate_id': 3, 'name': 'Michael Brown', 'party': 'Unity Front', 'is_active': True}
+                {
+                    "candidate_id": 1,
+                    "name": "John Doe",
+                    "party": "Democratic Party",
+                    "is_active": True,
+                    "votes": 0,
+                    "created_at": datetime.now()
+                },
+                {
+                    "candidate_id": 2,
+                    "name": "Jane Smith",
+                    "party": "Republican Party",
+                    "is_active": True,
+                    "votes": 0,
+                    "created_at": datetime.now()
+                }
             ]
             candidates_collection.insert_many(candidates)
-            print("✓ Sample candidates created")
-    except Exception as e:
-        print(f"✗ Failed to create candidates: {str(e)}")
+            print("✅ Default candidates created")
+    elif not mongodb_connected and len(candidates_db) == 0:
+        candidates_db[1] = {
+            'candidate_id': 1,
+            'name': 'John Doe',
+            'party': 'Democratic Party',
+            'is_active': True,
+            'votes': 0
+        }
+        candidates_db[2] = {
+            'candidate_id': 2,
+            'name': 'Jane Smith',
+            'party': 'Republican Party',
+            'is_active': True,
+            'votes': 0
+        }
+        print("✅ Default candidates created (in-memory)")
+    
+    print("✅ Default data initialization complete")
 
-# Initialize database
-if MONGODB_AVAILABLE:
-    create_default_admin()
-    create_sample_candidates()
+def requires_auth(f):
+    """Decorator for routes requiring authentication"""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        auth_header = request.headers.get('Authorization')
+        if not auth_header:
+            return jsonify({'success': False, 'message': 'Authentication required'}), 401
+        return f(*args, **kwargs)
+    return decorated
 
-# ========== User Authentication Routes ==========
-
-@app.route('/api/validate_aadhaar', methods=['POST'])
-def validate_aadhaar():
-    """Validate Aadhaar QR and check for duplicates"""
+def scan_qr_from_image_file(file_path):
+    """Scan QR code from an image file"""
+    if not QR_SCANNING_AVAILABLE:
+        return None
+    
     try:
-        data = request.get_json()
-        if not data:
-            return jsonify({'success': False, 'message': 'No data provided'}), 400
+        img = cv2.imread(file_path)
+        if img is None:
+            return None
         
-        qr_data = data.get('qr_data', '').strip()
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        decoded_objects = decode(gray)
         
-        if not qr_data:
-            return jsonify({'success': False, 'message': 'QR data is required'}), 400
+        if not decoded_objects:
+            # Try with different preprocessing
+            _, thresh = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
+            decoded_objects = decode(thresh)
+            
+            if not decoded_objects:
+                adaptive_thresh = cv2.adaptiveThreshold(gray, 255, 
+                                                       cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                                       cv2.THRESH_BINARY, 11, 2)
+                decoded_objects = decode(adaptive_thresh)
         
-        # Decode QR data
-        decoder = AadhaarQRDecoder(qr_data)
-        decoded_data = decoder.decode()
+        for obj in decoded_objects:
+            if obj.type == 'QRCODE':
+                qr_data = obj.data.decode('utf-8')
+                return qr_data
         
-        # Extract Aadhaar number
-        aadhaar_number = decoded_data.get('uid')
-        
-        if not aadhaar_number:
-            return jsonify({
-                'success': False,
-                'message': 'No Aadhaar number found in QR code',
-                'data': decoded_data
-            }), 400
-        
-        # Validate Aadhaar format
-        if len(aadhaar_number) != 12 or not aadhaar_number.isdigit():
-            return jsonify({
-                'success': False,
-                'message': 'Invalid Aadhaar number format',
-                'aadhaar': aadhaar_number
-            }), 400
-        
-        # Check if Aadhaar already registered
-        is_duplicate = False
-        existing_user = None
-        
-        if MONGODB_AVAILABLE:
-            existing_user = users_collection.find_one({'aadhaar_number': aadhaar_number})
-            if existing_user:
-                is_duplicate = True
-        
-        return jsonify({
-            'success': True,
-            'message': 'Aadhaar validated successfully',
-            'data': decoded_data,
-            'aadhaar_number': aadhaar_number,
-            'is_duplicate': is_duplicate,
-            'existing_user': existing_user['username'] if existing_user else None
-        })
+        return None
         
     except Exception as e:
-        return jsonify({'success': False, 'message': f'Validation failed: {str(e)}'}), 500
+        print(f"Error scanning QR code: {e}")
+        return None
 
-@app.route('/api/scan_uploaded_image', methods=['POST'])
-def scan_uploaded_image():
-    """Scan QR code from uploaded image file"""
-    try:
-        if 'file' not in request.files:
-            return jsonify({'success': False, 'message': 'No file provided'}), 400
-        
-        file = request.files['file']
-        if file.filename == '':
-            return jsonify({'success': False, 'message': 'No file selected'}), 400
-        
-        if not allowed_file(file.filename):
-            return jsonify({
-                'success': False, 
-                'message': f'File type not allowed. Allowed types: {", ".join(ALLOWED_EXTENSIONS)}'
-            }), 400
-        
-        # Save temporary file
-        temp_dir = tempfile.gettempdir()
-        temp_path = os.path.join(temp_dir, secure_filename(file.filename))
-        file.save(temp_path)
-        
-        print(f"Scanning QR from uploaded image: {file.filename}")
-        
-        # Scan QR code
-        qr_data = scan_qr_from_image_file(temp_path)
-        
-        # Clean up temporary file
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-        
-        if not qr_data:
-            return jsonify({'success': False, 'message': 'No QR code found in image'}), 400
-        
-        # Decode QR data
-        decoder = AadhaarQRDecoder(qr_data)
-        decoded_data = decoder.decode()
-        
-        # Extract Aadhaar number
-        aadhaar_number = decoded_data.get('uid')
-        
-        if not aadhaar_number:
-            return jsonify({
-                'success': False,
-                'message': 'No Aadhaar number found in QR code',
-                'data': decoded_data
-            }), 400
-        
-        # Check if Aadhaar already registered
-        is_duplicate = False
-        existing_user = None
-        
-        if MONGODB_AVAILABLE:
-            existing_user = users_collection.find_one({'aadhaar_number': aadhaar_number})
-            if existing_user:
-                is_duplicate = True
-        
-        return jsonify({
-            'success': True,
-            'message': 'QR code scanned successfully',
-            'qr_data': qr_data,
-            'data': decoded_data,
-            'aadhaar_number': aadhaar_number,
-            'is_duplicate': is_duplicate,
-            'existing_user': existing_user['username'] if existing_user else None
-        })
-        
-    except Exception as e:
-        return jsonify({'success': False, 'message': f'Image scanning failed: {str(e)}'}), 500
+# Routes
+@app.route('/')
+def index():
+    """Serve the main index page"""
+    return app.send_static_file('index.html')
+
+@app.route('/admin')
+def admin_page():
+    """Serve the admin page"""
+    return app.send_static_file('admin.html')
+
+@app.route('/voting')
+def voting_page():
+    """Serve the voting page"""
+    return app.send_static_file('voting.html')
+
+@app.route('/api/test', methods=['GET'])
+def test_api():
+    """Test API endpoint"""
+    return jsonify({
+        'success': True,
+        'message': 'Server is running',
+        'mongodb': mongodb_connected,
+        'qr_scanning': 'Available' if QR_SCANNING_AVAILABLE else 'Unavailable',
+        'admin_account': 'Created' if get_admin("admin") else 'Not Found'
+    })
 
 @app.route('/api/register', methods=['POST'])
 def register():
-    """User registration with Aadhaar validation"""
+    """Register a new voter"""
     try:
         data = request.get_json()
-        if not data:
-            return jsonify({'success': False, 'message': 'No data provided'}), 400
-        
         username = data.get('username', '').strip()
         password = data.get('password', '').strip()
-        full_name = data.get('fullName', '').strip() or username
+        fullName = data.get('fullName', '').strip()
         qr_data = data.get('qr_data', '').strip()
         
         if not username or not password:
-            return jsonify({'success': False, 'message': 'Username and password are required'}), 400
+            return jsonify({'success': False, 'message': 'Username and password are required'})
         
-        if len(username) < 3:
-            return jsonify({'success': False, 'message': 'Username must be at least 3 characters'}), 400
+        # Check if username already exists
+        existing_user = get_user(username)
+        if existing_user:
+            return jsonify({'success': False, 'message': 'Username already exists'})
         
         if len(password) < 6:
-            return jsonify({'success': False, 'message': 'Password must be at least 6 characters'}), 400
+            return jsonify({'success': False, 'message': 'Password must be at least 6 characters'})
         
-        # Validate Aadhaar QR is required
-        if not qr_data:
+        # Decode Aadhaar QR data
+        aadhaar_number = None
+        decoded_data = None
+        if qr_data:
+            try:
+                decoder = AadhaarQRDecoder(qr_data)
+                decoded_data = decoder.decode()
+                aadhaar_number = decoded_data.get('uid', '')
+                
+                # Check if Aadhaar is already registered
+                if aadhaar_number:
+                    # Check MongoDB
+                    if mongodb_connected and users_collection is not None:
+                        duplicate_user = users_collection.find_one({"aadhaar_number": aadhaar_number, "role": "voter"})
+                    # Check in-memory
+                    elif not mongodb_connected:
+                        duplicate_user = next((u for u in users_db.values() if u.get('aadhaar_number') == aadhaar_number and u.get('role') == 'voter'), None)
+                    else:
+                        duplicate_user = None
+                    
+                    if duplicate_user:
+                        return jsonify({
+                            'success': False,
+                            'message': 'Aadhaar number already registered',
+                            'is_duplicate': True
+                        })
+            except Exception as e:
+                return jsonify({'success': False, 'message': f'Invalid QR data: {str(e)}'})
+        
+        # Create user document
+        user_data = {
+            "username": username,
+            "password": password,  # In production, hash this
+            "role": "voter",
+            "full_name": fullName or username,
+            "aadhaar_number": aadhaar_number,
+            "is_verified": bool(aadhaar_number),
+            "has_voted": False,
+            "qr_data": decoded_data if qr_data else None,
+            "created_at": datetime.now()
+        }
+        
+        # Save to MongoDB or in-memory
+        user_id = create_user(user_data)
+        
+        if user_id:
             return jsonify({
-                'success': False, 
-                'message': 'Aadhaar QR code is required for registration'
-            }), 400
-        
-        # Decode QR data to extract Aadhaar number
-        decoder = AadhaarQRDecoder(qr_data)
-        decoded_data = decoder.decode()
-        aadhaar_number = decoded_data.get('uid')
-        
-        if not aadhaar_number or len(aadhaar_number) != 12 or not aadhaar_number.isdigit():
-            return jsonify({
-                'success': False, 
-                'message': 'Invalid Aadhaar QR code. Please scan a valid Aadhaar QR.'
-            }), 400
-        
-        if MONGODB_AVAILABLE:
-            # Check if username already exists
-            existing_user = users_collection.find_one({'username': username})
-            if existing_user:
-                return jsonify({'success': False, 'message': 'Username already exists'}), 400
-            
-            # Check if Aadhaar already registered
-            existing_aadhaar = users_collection.find_one({'aadhaar_number': aadhaar_number})
-            if existing_aadhaar:
-                return jsonify({
-                    'success': False, 
-                    'message': f'Aadhaar number {aadhaar_number} is already registered'
-                }), 400
-            
-            # Create new user
-            hashed_password = generate_password_hash(password)
-            user_data = {
-                'username': username,
-                'password': hashed_password,
-                'full_name': full_name,
-                'aadhaar_number': aadhaar_number,
-                'qr_data': decoded_data,
-                'is_verified': True,
-                'created_at': datetime.now(),
-                'last_login': None
-            }
-            
-            users_collection.insert_one(user_data)
-        
-        return jsonify({
-            'success': True,
-            'message': 'Registration successful with Aadhaar verification',
-            'user': {
-                'username': username,
-                'full_name': full_name,
-                'aadhaar_number': aadhaar_number,
-                'is_verified': True
-            }
-        })
+                'success': True,
+                'message': 'Registration successful',
+                'user': {
+                    'username': username,
+                    'full_name': fullName or username,
+                    'aadhaar_number': aadhaar_number,
+                    'is_verified': bool(aadhaar_number)
+                }
+            })
+        else:
+            return jsonify({'success': False, 'message': 'Failed to create user account'})
         
     except Exception as e:
-        if 'duplicate key error' in str(e).lower() and 'aadhaar_number' in str(e):
-            return jsonify({
-                'success': False,
-                'message': 'This Aadhaar number is already registered'
-            }), 400
-        return jsonify({'success': False, 'message': f'Registration failed: {str(e)}'}), 500
+        return jsonify({'success': False, 'message': f'Registration failed: {str(e)}'})
 
 @app.route('/api/login', methods=['POST'])
 def login():
     """User login"""
     try:
         data = request.get_json()
-        if not data:
-            return jsonify({'success': False, 'message': 'No data provided'}), 400
-        
         username = data.get('username', '').strip()
         password = data.get('password', '').strip()
         
         if not username or not password:
-            return jsonify({'success': False, 'message': 'Username and password are required'}), 400
+            return jsonify({'success': False, 'message': 'Username and password are required'})
         
-        if MONGODB_AVAILABLE:
-            user = users_collection.find_one({'username': username})
-            if not user:
-                return jsonify({'success': False, 'message': 'User does not exist'}), 401
-            
-            if not check_password_hash(user['password'], password):
-                return jsonify({'success': False, 'message': 'Incorrect password'}), 401
-            
-            # Update last login time
-            users_collection.update_one(
-                {'_id': user['_id']},
-                {'$set': {'last_login': datetime.now()}}
-            )
-            
-            user_data = {
-                'username': user['username'],
-                'full_name': user.get('full_name', user['username']),
-                'aadhaar_number': user.get('aadhaar_number'),
-                'is_verified': user.get('is_verified', False)
-            }
-        else:
-            # Mock data (for testing)
-            user_data = {
-                'username': username,
-                'full_name': username,
-                'aadhaar_number': '999999999999',
-                'is_verified': True
-            }
+        user = get_user(username)
+        if not user or user.get('role') != 'voter':
+            return jsonify({'success': False, 'message': 'Invalid username or password'})
+        
+        if user.get('password') != password:  # In production, use proper password hashing
+            return jsonify({'success': False, 'message': 'Invalid username or password'})
         
         return jsonify({
             'success': True,
             'message': 'Login successful',
-            'user': user_data
+            'user': {
+                'username': username,
+                'full_name': user.get('full_name', username),
+                'aadhaar_number': user.get('aadhaar_number', ''),
+                'is_verified': user.get('is_verified', False),
+                'has_voted': user.get('has_voted', False),
+                'qr_data': user.get('qr_data')
+            }
         })
         
     except Exception as e:
-        return jsonify({'success': False, 'message': f'Login failed: {str(e)}'}), 500
-
-# ========== Voting System Routes ==========
+        return jsonify({'success': False, 'message': f'Login failed: {str(e)}'})
 
 @app.route('/api/admin_login', methods=['POST'])
 def admin_login():
-    """Admin login"""
+    """Admin login with auto-creation if not exists"""
     try:
         data = request.get_json()
-        if not data:
-            return jsonify({'success': False, 'message': 'No data provided'}), 400
-        
         username = data.get('username', '').strip()
         password = data.get('password', '').strip()
         
-        if not username or not password:
-            return jsonify({'success': False, 'message': 'Username and password are required'}), 400
+        print(f"🔐 Admin login attempt: {username}")
         
-        if MONGODB_AVAILABLE:
-            admin = admin_collection.find_one({'username': username})
+        if not username or not password:
+            return jsonify({'success': False, 'message': 'Username and password are required'})
+        
+        # Special case: if trying to login as admin with default password, create if not exists
+        if username == "admin" and password == "admin123":
+            admin = get_admin("admin")
             if not admin:
-                return jsonify({'success': False, 'message': 'Admin user does not exist'}), 401
+                print("⚠️ Admin account not found, creating on-demand...")
+                admin_data = {
+                    "username": "admin",
+                    "password": "admin123",
+                    "role": "admin",
+                    "full_name": "System Administrator",
+                    "created_at": datetime.now()
+                }
+                create_admin(admin_data)
+                admin = admin_data
+                print("✅ Admin account created on-demand")
             
-            if not check_password_hash(admin['password'], password):
-                return jsonify({'success': False, 'message': 'Incorrect password'}), 401
-            
-            # Update last login time
-            admin_collection.update_one(
-                {'_id': admin['_id']},
-                {'$set': {'last_login': datetime.now()}}
-            )
-            
-            admin_data = {
-                'username': admin['username'],
-                'role': admin.get('role', 'admin'),
-                'last_login': admin.get('last_login')
-            }
-        else:
-            # Mock data
-            admin_data = {
-                'username': 'admin',
-                'role': 'superadmin',
-                'last_login': datetime.now().isoformat()
-            }
+            if admin.get('role') == 'admin' and admin.get('password') == password:
+                token = f"admin_token_{username}_{datetime.now().timestamp()}"
+                print(f"✅ Admin login successful: {username}")
+                
+                return jsonify({
+                    'success': True,
+                    'message': 'Admin login successful',
+                    'admin': {
+                        'username': username,
+                        'full_name': admin.get('full_name', username)
+                    },
+                    'token': token
+                })
+        
+        # Regular admin check
+        admin = get_admin(username)
+        if not admin or admin.get('role') != 'admin':
+            print(f"❌ Admin not found or invalid role: {username}")
+            return jsonify({'success': False, 'message': 'Invalid admin credentials'})
+        
+        if admin.get('password') != password:
+            print(f"❌ Password mismatch for admin: {username}")
+            return jsonify({'success': False, 'message': 'Invalid admin credentials'})
+        
+        token = f"admin_token_{username}_{datetime.now().timestamp()}"
+        print(f"✅ Admin login successful: {username}")
         
         return jsonify({
             'success': True,
             'message': 'Admin login successful',
-            'admin': admin_data
+            'admin': {
+                'username': username,
+                'full_name': admin.get('full_name', username)
+            },
+            'token': token
         })
         
     except Exception as e:
-        return jsonify({'success': False, 'message': f'Admin login failed: {str(e)}'}), 500
+        print(f"❌ Admin login error: {str(e)}")
+        return jsonify({'success': False, 'message': f'Admin login failed: {str(e)}'})
+
+@app.route('/api/validate_aadhaar', methods=['POST'])
+def validate_aadhaar():
+    """Validate Aadhaar QR data"""
+    try:
+        data = request.get_json()
+        qr_data = data.get('qr_data', '').strip()
+        
+        if not qr_data:
+            return jsonify({'success': False, 'message': 'QR data is required'})
+        
+        # Decode Aadhaar QR
+        decoder = AadhaarQRDecoder(qr_data)
+        decoded_data = decoder.decode()
+        
+        aadhaar_number = decoded_data.get('uid', '')
+        
+        if not aadhaar_number:
+            return jsonify({'success': False, 'message': 'Invalid Aadhaar QR code'})
+        
+        # Check if Aadhaar is already registered
+        is_duplicate = False
+        existing_user = None
+        
+        if mongodb_connected and users_collection is not None:
+            duplicate_user = users_collection.find_one({"aadhaar_number": aadhaar_number, "role": "voter"})
+            if duplicate_user:
+                is_duplicate = True
+                existing_user = duplicate_user.get('username')
+        elif not mongodb_connected:
+            duplicate_user = next((u for u in users_db.values() if u.get('aadhaar_number') == aadhaar_number and u.get('role') == 'voter'), None)
+            if duplicate_user:
+                is_duplicate = True
+                existing_user = duplicate_user.get('username')
+        
+        return jsonify({
+            'success': True,
+            'message': 'Aadhaar validated successfully',
+            'aadhaar_number': aadhaar_number,
+            'is_duplicate': is_duplicate,
+            'existing_user': existing_user,
+            'data': decoded_data
+        })
+        
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'Aadhaar validation failed: {str(e)}'})
+
+@app.route('/api/scan_uploaded_image', methods=['POST'])
+def scan_uploaded_image():
+    """Scan QR code from uploaded image"""
+    if not QR_SCANNING_AVAILABLE:
+        return jsonify({
+            'success': False,
+            'message': 'QR scanning not available. Install opencv-python and pyzbar.'
+        })
+    
+    try:
+        if 'file' not in request.files:
+            return jsonify({'success': False, 'message': 'No file uploaded'})
+        
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'success': False, 'message': 'No file selected'})
+        
+        # Save uploaded file temporarily
+        temp_path = f"temp_{datetime.now().timestamp()}.jpg"
+        file.save(temp_path)
+        
+        # Scan QR from image
+        qr_data = scan_qr_from_image_file(temp_path)
+        
+        # Clean up temp file
+        os.remove(temp_path)
+        
+        if qr_data:
+            return jsonify({
+                'success': True,
+                'message': 'QR code scanned successfully',
+                'qr_data': qr_data
+            })
+        else:
+            return jsonify({'success': False, 'message': 'No QR code found in image'})
+        
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'Error processing image: {str(e)}'})
 
 @app.route('/api/get_user_info', methods=['POST'])
 def get_user_info():
-    """Get user information for voting page"""
+    """Get user information"""
     try:
         data = request.get_json()
-        if not data:
-            return jsonify({'success': False, 'message': 'No data provided'}), 400
+        username = data.get('username', '').strip()
         
-        username = data.get('username')
         if not username:
-            return jsonify({'success': False, 'message': 'Username required'}), 400
+            return jsonify({'success': False, 'message': 'Username is required'})
         
-        if MONGODB_AVAILABLE:
-            user = users_collection.find_one({'username': username})
-            if not user:
-                return jsonify({'success': False, 'message': 'User not found'}), 404
-            
-            # Check if user has already voted
-            has_voted = votes_collection.find_one({'username': username}) is not None
-            
-            # Get candidate list
-            candidates = list(candidates_collection.find({'is_active': True}, {'_id': 0, 'candidate_id': 1, 'name': 1, 'party': 1}))
-            
-            user_data = {
-                'username': user['username'],
-                'full_name': user.get('full_name', user['username']),
-                'aadhaar_number': user.get('aadhaar_number'),
+        user = get_user(username)
+        if not user or user.get('role') != 'voter':
+            return jsonify({'success': False, 'message': 'User not found'})
+        
+        # Get active candidates
+        active_candidates = get_all_candidates()
+        active_candidates = [c for c in active_candidates if c.get('is_active', True)]
+        
+        # Convert ObjectId to string for JSON serialization (MongoDB only)
+        if mongodb_connected:
+            for candidate in active_candidates:
+                if '_id' in candidate:
+                    candidate['_id'] = str(candidate['_id'])
+        
+        return jsonify({
+            'success': True,
+            'user': {
+                'username': username,
+                'full_name': user.get('full_name', username),
+                'aadhaar_number': user.get('aadhaar_number', ''),
                 'is_verified': user.get('is_verified', False),
-                'has_voted': has_voted,
-                'qr_data': user.get('qr_data', {})
-            }
-            
-            return jsonify({
-                'success': True,
-                'message': 'User info retrieved',
-                'user': user_data,
-                'candidates': candidates
-            })
-        else:
-            # Mock data
-            return jsonify({
-                'success': True,
-                'message': 'Mock user info',
-                'user': {
-                    'username': username,
-                    'full_name': username,
-                    'aadhaar_number': '999999999999',
-                    'is_verified': True,
-                    'has_voted': False,
-                    'qr_data': {'name': username}
-                },
-                'candidates': [
-                    {'candidate_id': 1, 'name': 'John Smith', 'party': 'National Party'},
-                    {'candidate_id': 2, 'name': 'Emma Johnson', 'party': 'Progressive Alliance'},
-                    {'candidate_id': 3, 'name': 'Michael Brown', 'party': 'Unity Front'}
-                ]
-            })
-            
+                'has_voted': user.get('has_voted', False),
+                'qr_data': user.get('qr_data')
+            },
+            'candidates': active_candidates
+        })
+        
     except Exception as e:
-        return jsonify({'success': False, 'message': f'Failed to get user info: {str(e)}'}), 500
+        return jsonify({'success': False, 'message': f'Failed to get user info: {str(e)}'})
 
 @app.route('/api/submit_vote', methods=['POST'])
 def submit_vote():
     """Submit a vote"""
     try:
         data = request.get_json()
-        if not data:
-            return jsonify({'success': False, 'message': 'No data provided'}), 400
-        
-        username = data.get('username')
-        candidate_id = data.get('candidate_id')
+        username = data.get('username', '').strip()
+        candidate_id = int(data.get('candidate_id', 0))
         
         if not username or not candidate_id:
-            return jsonify({'success': False, 'message': 'Username and candidate ID required'}), 400
+            return jsonify({'success': False, 'message': 'Username and candidate ID are required'})
         
-        if MONGODB_AVAILABLE:
-            # Check if user exists
-            user = users_collection.find_one({'username': username})
-            if not user:
-                return jsonify({'success': False, 'message': 'User not found'}), 404
-            
-            # Check if user is verified
-            if not user.get('is_verified', False):
-                return jsonify({'success': False, 'message': 'User not verified. Please verify Aadhaar first.'}), 400
-            
-            # Check if user has already voted
-            existing_vote = votes_collection.find_one({'username': username})
-            if existing_vote:
-                return jsonify({'success': False, 'message': 'You have already voted'}), 400
-            
-            # Check if candidate exists
-            candidate = candidates_collection.find_one({'candidate_id': candidate_id, 'is_active': True})
-            if not candidate:
-                return jsonify({'success': False, 'message': 'Invalid candidate'}), 400
-            
-            # Record the vote
-            vote_data = {
-                'username': username,
-                'aadhaar_number': user.get('aadhaar_number'),
-                'candidate_id': candidate_id,
-                'candidate_name': candidate.get('name'),
-                'candidate_party': candidate.get('party'),
-                'voted_at': datetime.now(),
-                'ip_address': request.remote_addr
-            }
-            
-            votes_collection.insert_one(vote_data)
-            
-            return jsonify({
-                'success': True,
-                'message': 'Vote submitted successfully',
-                'vote': {
-                    'candidate': candidate.get('name'),
-                    'party': candidate.get('party'),
-                    'timestamp': vote_data['voted_at'].isoformat()
-                }
-            })
-        else:
-            return jsonify({
-                'success': True,
-                'message': 'Mock vote submitted',
-                'vote': {
-                    'candidate': 'Mock Candidate',
-                    'party': 'Mock Party',
-                    'timestamp': datetime.now().isoformat()
-                }
-            })
-            
+        user = get_user(username)
+        if not user or user.get('role') != 'voter':
+            return jsonify({'success': False, 'message': 'User not found'})
+        
+        if user.get('has_voted', False):
+            return jsonify({'success': False, 'message': 'You have already voted'})
+        
+        if not user.get('is_verified', False):
+            return jsonify({'success': False, 'message': 'Aadhaar verification required'})
+        
+        candidate = get_candidate(candidate_id)
+        if not candidate or not candidate.get('is_active', True):
+            return jsonify({'success': False, 'message': 'Invalid candidate'})
+        
+        # Record the vote
+        vote_id = str(uuid.uuid4())
+        vote_record = {
+            'vote_id': vote_id,
+            'username': username,
+            'candidate_id': candidate_id,
+            'candidate_name': candidate.get('name'),
+            'candidate_party': candidate.get('party'),
+            'voted_at': datetime.now(),
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        create_vote(vote_record)
+        
+        # Update user record
+        update_user(username, {'has_voted': True})
+        
+        # Update candidate votes
+        current_votes = candidate.get('votes', 0)
+        update_candidate(candidate_id, {'votes': current_votes + 1})
+        
+        return jsonify({
+            'success': True,
+            'message': 'Vote submitted successfully',
+            'vote_id': vote_id,
+            'candidate_name': candidate.get('name')
+        })
+        
     except Exception as e:
-        return jsonify({'success': False, 'message': f'Failed to submit vote: {str(e)}'}), 500
-
-@app.route('/api/admin/get_results', methods=['GET'])
-def get_voting_results():
-    """Get voting results (admin only)"""
-    try:
-        # Add authentication check here in production
-        if MONGODB_AVAILABLE:
-            # Get total votes per candidate
-            pipeline = [
-                {
-                    '$group': {
-                        '_id': '$candidate_id',
-                        'candidate_name': {'$first': '$candidate_name'},
-                        'candidate_party': {'$first': '$candidate_party'},
-                        'total_votes': {'$sum': 1}
-                    }
-                },
-                {'$sort': {'total_votes': -1}}
-            ]
-            
-            results = list(votes_collection.aggregate(pipeline))
-            
-            # Get total votes
-            total_votes = votes_collection.count_documents({})
-            
-            # Get voter statistics
-            total_users = users_collection.count_documents({'is_verified': True})
-            voted_users = votes_collection.distinct('username')
-            voting_percentage = (len(voted_users) / total_users * 100) if total_users > 0 else 0
-            
-            # Get total candidates
-            total_candidates = candidates_collection.count_documents({'is_active': True})
-            
-            return jsonify({
-                'success': True,
-                'results': results,
-                'statistics': {
-                    'total_votes': total_votes,
-                    'total_voters': total_users,
-                    'voted_users': len(voted_users),
-                    'voting_percentage': round(voting_percentage, 2),
-                    'total_candidates': total_candidates
-                }
-            })
-        else:
-            # Mock results
-            return jsonify({
-                'success': True,
-                'results': [
-                    {'_id': 1, 'candidate_name': 'John Smith', 'candidate_party': 'National Party', 'total_votes': 150},
-                    {'_id': 2, 'candidate_name': 'Emma Johnson', 'candidate_party': 'Progressive Alliance', 'total_votes': 120},
-                    {'_id': 3, 'candidate_name': 'Michael Brown', 'candidate_party': 'Unity Front', 'total_votes': 80}
-                ],
-                'statistics': {
-                    'total_votes': 350,
-                    'total_voters': 500,
-                    'voted_users': 350,
-                    'voting_percentage': 70.0,
-                    'total_candidates': 3
-                }
-            })
-            
-    except Exception as e:
-        return jsonify({'success': False, 'message': f'Failed to get results: {str(e)}'}), 500
-
-@app.route('/api/admin/add_candidate', methods=['POST'])
-def add_candidate():
-    """Add candidate (admin only)"""
-    try:
-        data = request.get_json()
-        if not data:
-            return jsonify({'success': False, 'message': 'No data provided'}), 400
-        
-        name = data.get('name', '').strip()
-        party = data.get('party', '').strip()
-        
-        if not name or not party:
-            return jsonify({'success': False, 'message': 'Candidate name and party required'}), 400
-        
-        if MONGODB_AVAILABLE:
-            # Generate candidate ID
-            last_candidate = candidates_collection.find_one(sort=[("candidate_id", -1)])
-            candidate_id = last_candidate['candidate_id'] + 1 if last_candidate else 1
-            
-            candidate_data = {
-                'candidate_id': candidate_id,
-                'name': name,
-                'party': party,
-                'added_at': datetime.now(),
-                'is_active': True
-            }
-            
-            candidates_collection.insert_one(candidate_data)
-            
-            return jsonify({
-                'success': True,
-                'message': f'Candidate {name} added successfully',
-                'candidate': {
-                    'candidate_id': candidate_id,
-                    'name': name,
-                    'party': party
-                }
-            })
-        else:
-            return jsonify({
-                'success': True,
-                'message': 'Mock candidate added',
-                'candidate': {
-                    'candidate_id': 99,
-                    'name': name,
-                    'party': party
-                }
-            })
-            
-    except Exception as e:
-        return jsonify({'success': False, 'message': f'Failed to add candidate: {str(e)}'}), 500
-
-@app.route('/api/admin/remove_candidate', methods=['POST'])
-def remove_candidate():
-    """Remove candidate (admin only)"""
-    try:
-        data = request.get_json()
-        if not data:
-            return jsonify({'success': False, 'message': 'No data provided'}), 400
-        
-        candidate_id = data.get('candidate_id')
-        
-        if not candidate_id:
-            return jsonify({'success': False, 'message': 'Candidate ID required'}), 400
-        
-        if MONGODB_AVAILABLE:
-            # Check if candidate exists
-            candidate = candidates_collection.find_one({'candidate_id': candidate_id})
-            if not candidate:
-                return jsonify({'success': False, 'message': 'Candidate not found'}), 404
-            
-            # Check if candidate has votes
-            vote_count = votes_collection.count_documents({'candidate_id': candidate_id})
-            if vote_count > 0:
-                return jsonify({
-                    'success': False, 
-                    'message': f'Cannot remove candidate with {vote_count} vote(s).'
-                }), 400
-            
-            # Remove candidate
-            result = candidates_collection.delete_one({'candidate_id': candidate_id})
-            
-            if result.deleted_count > 0:
-                return jsonify({
-                    'success': True,
-                    'message': f'Candidate {candidate.get("name")} removed successfully'
-                })
-            else:
-                return jsonify({'success': False, 'message': 'Failed to remove candidate'}), 400
-        else:
-            return jsonify({
-                'success': True,
-                'message': 'Mock candidate removed'
-            })
-            
-    except Exception as e:
-        return jsonify({'success': False, 'message': f'Failed to remove candidate: {str(e)}'}), 500
+        return jsonify({'success': False, 'message': f'Failed to submit vote: {str(e)}'})
 
 @app.route('/api/get_vote_history', methods=['POST'])
 def get_vote_history():
     """Get user's vote history"""
     try:
         data = request.get_json()
-        if not data:
-            return jsonify({'success': False, 'message': 'No data provided'}), 400
+        username = data.get('username', '').strip()
         
-        username = data.get('username')
         if not username:
-            return jsonify({'success': False, 'message': 'Username required'}), 400
+            return jsonify({'success': False, 'message': 'Username is required'})
         
-        if MONGODB_AVAILABLE:
-            vote = votes_collection.find_one({'username': username})
-            if vote:
-                return jsonify({
-                    'success': True,
-                    'has_voted': True,
-                    'vote': {
-                        'candidate_name': vote.get('candidate_name'),
-                        'candidate_party': vote.get('candidate_party'),
-                        'voted_at': vote.get('voted_at').isoformat() if vote.get('voted_at') else None
-                    }
-                })
-            else:
-                return jsonify({
-                    'success': True,
-                    'has_voted': False,
-                    'vote': None
-                })
-        else:
-            return jsonify({
-                'success': True,
-                'has_voted': True,
-                'vote': {
-                    'candidate_name': 'John Smith',
-                    'candidate_party': 'National Party',
-                    'voted_at': datetime.now().isoformat()
-                }
-            })
-            
+        user = get_user(username)
+        if not user:
+            return jsonify({'success': False, 'message': 'User not found'})
+        
+        # Find user's vote
+        user_vote = None
+        if mongodb_connected and votes_collection is not None:
+            user_vote = votes_collection.find_one({"username": username})
+            if user_vote and '_id' in user_vote:
+                user_vote['_id'] = str(user_vote['_id'])
+        elif not mongodb_connected:
+            user_vote = next((v for v in votes_db if v['username'] == username), None)
+        
+        return jsonify({
+            'success': True,
+            'has_voted': user.get('has_voted', False),
+            'vote': user_vote
+        })
+        
     except Exception as e:
-        return jsonify({'success': False, 'message': f'Failed to get vote history: {str(e)}'}), 500
+        return jsonify({'success': False, 'message': f'Failed to get vote history: {str(e)}'})
 
-# ========== Original Flask Routes ==========
+# Admin API endpoints
+@app.route('/api/admin/get_results', methods=['GET'])
+def admin_get_results():
+    """Admin: Get voting results"""
+    try:
+        # Calculate statistics
+        total_voters = get_total_voters()
+        total_votes = get_total_votes()
+        total_candidates = get_total_candidates()
+        
+        voting_percentage = 0
+        if total_voters > 0:
+            voting_percentage = round((total_votes / total_voters) * 100, 1)
+        
+        # Get all candidates
+        all_candidates = get_all_candidates()
+        # Convert ObjectId to string for JSON serialization (MongoDB only)
+        if mongodb_connected:
+            for candidate in all_candidates:
+                if '_id' in candidate:
+                    candidate['_id'] = str(candidate['_id'])
+        
+        return jsonify({
+            'success': True,
+            'statistics': {
+                'total_voters': total_voters,
+                'total_votes': total_votes,
+                'voting_percentage': voting_percentage,
+                'total_candidates': total_candidates
+            },
+            'all_candidates': all_candidates
+        })
+        
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'Failed to get results: {str(e)}'})
 
-@app.route('/')
-def index():
-    """Main page"""
-    return send_from_directory('.', 'index.html')
-
-@app.route('/voting')
-def voting():
-    """Voting page"""
-    return send_from_directory('.', 'voting.html')
-
-@app.route('/admin')
-def admin():
-    """Admin page"""
-    return send_from_directory('.', 'admin.html')
-
-@app.route('/api/decode', methods=['POST'])
-def decode_qr():
-    """Decode QR data API"""
+@app.route('/api/admin/add_candidate', methods=['POST'])
+def admin_add_candidate():
+    """Admin: Add a new candidate"""
     try:
         data = request.get_json()
-        if not data or 'qr_data' not in data:
-            return jsonify({'success': False, 'message': 'No QR data provided'}), 400
+        name = data.get('name', '').strip()
+        party = data.get('party', '').strip()
         
-        qr_data = data['qr_data'].strip()
-        if not qr_data:
-            return jsonify({'success': False, 'message': 'QR data is empty'}), 400
+        if not name or not party:
+            return jsonify({'success': False, 'message': 'Candidate name and party are required'})
         
-        decoder = AadhaarQRDecoder(qr_data)
-        result = decoder.decode()
+        # Generate new candidate ID
+        all_candidates = get_all_candidates()
+        existing_ids = [c.get('candidate_id', 0) for c in all_candidates]
+        new_id = max(existing_ids) + 1 if existing_ids else 1
         
-        return jsonify({
-            'success': True,
-            'message': 'Decoding successful',
-            'data': result
-        })
-    except Exception as e:
-        return jsonify({'success': False, 'message': f'Decoding failed: {str(e)}'}), 500
-
-@app.route('/api/upload', methods=['POST'])
-def upload_file():
-    """Upload and process QR image"""
-    try:
-        if 'file' not in request.files:
-            return jsonify({'success': False, 'message': 'No file provided'}), 400
+        candidate_data = {
+            'candidate_id': new_id,
+            'name': name,
+            'party': party,
+            'is_active': True,
+            'votes': 0,
+            'created_at': datetime.now()
+        }
         
-        file = request.files['file']
-        if file.filename == '':
-            return jsonify({'success': False, 'message': 'No file selected'}), 400
+        candidate_id = create_candidate(candidate_data)
         
-        if not allowed_file(file.filename):
+        if candidate_id:
             return jsonify({
-                'success': False, 
-                'message': f'File type not allowed. Allowed types: {", ".join(ALLOWED_EXTENSIONS)}'
-            }), 400
+                'success': True,
+                'message': f'Candidate {name} added successfully',
+                'candidate_id': new_id
+            })
+        else:
+            return jsonify({'success': False, 'message': 'Failed to add candidate'})
         
-        # Save temporary file
-        temp_dir = tempfile.gettempdir()
-        temp_path = os.path.join(temp_dir, secure_filename(file.filename))
-        file.save(temp_path)
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'Failed to add candidate: {str(e)}'})
+
+@app.route('/api/admin/remove_candidate', methods=['POST'])
+def admin_remove_candidate():
+    """Admin: Remove a candidate"""
+    try:
+        data = request.get_json()
+        candidate_id = int(data.get('candidate_id', 0))
         
-        print(f"Saved temporary file: {temp_path}")
+        if not candidate_id:
+            return jsonify({'success': False, 'message': 'Candidate ID is required'})
         
-        # Scan QR code
-        qr_data = scan_qr_from_image_file(temp_path)
+        candidate = get_candidate(candidate_id)
+        if not candidate:
+            return jsonify({'success': False, 'message': 'Candidate not found'})
         
-        if not qr_data:
-            # Clean up temporary file
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-            return jsonify({'success': False, 'message': 'No QR code found in image'}), 400
+        candidate_name = candidate.get('name')
         
-        # Decode QR data
-        decoder = AadhaarQRDecoder(qr_data)
-        result = decoder.decode()
-        
-        # Clean up temporary file
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+        # Mark candidate as inactive instead of deleting
+        update_candidate(candidate_id, {'is_active': False})
         
         return jsonify({
             'success': True,
-            'message': 'File processed successfully',
-            'qr_data': qr_data[:500] + ('...' if len(qr_data) > 500 else ''),
-            'data': result
+            'message': f'Candidate {candidate_name} removed successfully'
         })
         
     except Exception as e:
-        return jsonify({'success': False, 'message': f'File processing failed: {str(e)}'}), 500
+        return jsonify({'success': False, 'message': f'Failed to remove candidate: {str(e)}'})
 
-@app.route('/api/test', methods=['GET'])
-def test_api():
-    """Test endpoint"""
-    test_data = {
-        'status': 'Online',
-        'qr_scanning': 'Available' if QR_SCANNING_AVAILABLE else 'Unavailable',
-        'mongodb': 'Connected' if MONGODB_AVAILABLE else 'Not connected',
-        'timestamp': datetime.now().isoformat()
-    }
-    return jsonify(test_data)
+# Error handlers
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({'success': False, 'message': 'Endpoint not found'}), 404
 
-@app.route('/api/health', methods=['GET'])
-def health_check():
-    """Health check endpoint"""
-    return jsonify({'status': 'healthy', 'timestamp': datetime.now().isoformat()})
+@app.errorhandler(500)
+def server_error(error):
+    return jsonify({'success': False, 'message': 'Internal server error'}), 500
 
-@app.route('/uploads/<filename>')
-def uploaded_file(filename):
-    """Serve uploaded files"""
-    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
-
+# Main entry point
 if __name__ == '__main__':
-    print("\n" + "="*60)
-    print("Online Voting System with Aadhaar QR Verification")
     print("="*60)
-    print(f"MongoDB: {'✓ Connected' if MONGODB_AVAILABLE else '✗ Not connected'}")
-    print(f"QR Scanning: {'✓ Available' if QR_SCANNING_AVAILABLE else '✗ Unavailable'}")
-    print(f"Upload Folder: {os.path.abspath(UPLOAD_FOLDER)}")
-    print("\nAvailable Endpoints:")
-    print("  GET  /                         - Main page")
-    print("  GET  /voting                   - Voting page")
-    print("  GET  /admin                    - Admin panel")
-    print("  POST /api/register             - User registration (with Aadhaar)")
-    print("  POST /api/login                - User login")
-    print("  POST /api/admin_login          - Admin login")
-    print("  POST /api/get_user_info        - Get user info for voting")
-    print("  POST /api/submit_vote          - Submit vote")
-    print("  GET  /api/admin/get_results    - Get voting results (admin)")
-    print("  POST /api/admin/add_candidate  - Add candidate (admin)")
-    print("  POST /api/admin/remove_candidate - Remove candidate (admin)")
-    print("  POST /api/validate_aadhaar     - Validate Aadhaar QR")
-    print("  POST /api/scan_uploaded_image  - Scan QR from uploaded image")
-    print("  POST /api/decode               - Decode QR text data")
-    print("  POST /api/upload               - Upload QR image file")
-    print("  POST /api/get_vote_history     - Get vote history")
-    print("  GET  /api/test                 - Test server status")
-    print("  GET  /api/health               - Health check")
-    print("  GET  /uploads/<filename>       - Access uploaded files")
-    print("\nStarting server...")
+    print("ONLINE VOTING SYSTEM")
+    print("="*60)
+    print(f"📊 MongoDB: {'✅ Connected' if mongodb_connected else '❌ Not Connected'}")
+    print(f"📷 QR Scanning: {'✅ Available' if QR_SCANNING_AVAILABLE else '❌ Unavailable'}")
+    
+    # Initialize default data
+    admin_created = init_default_admin()
+    init_default_data()
+    
+    print("\n🔑 LOGIN CREDENTIALS:")
+    if admin_created:
+        print("   Admin:        admin / admin123")
+    else:
+        print("   ❌ Admin account could not be created")
+    
+    print("   Test Voter:   testvoter / test123")
+    print("\n🌐 Server URL: http://127.0.0.1:5000")
+    print("   Admin Panel: http://127.0.0.1:5000/admin")
     print("="*60)
     
-    port = int(os.environ.get('PORT', 5000))
-    app.run(debug=True, host='0.0.0.0', port=port)
+    # Create necessary directories
+    if not os.path.exists('temp'):
+        os.makedirs('temp')
+    
+    # Run the Flask app
+    app.run(host='127.0.0.1', port=5000, debug=True, use_reloader=False)

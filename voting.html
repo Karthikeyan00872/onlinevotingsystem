@@ -1,12 +1,30 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Online Voting System - Cast Your Vote</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap"
+        rel="stylesheet">
     <link rel="stylesheet" href="style.css">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <script src="common.js" defer></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            const bg = getComputedStyle(document.body).backgroundImage;
+            console.log('[diagnostic] voting page body background:', bg);
+            if (!bg || bg === 'none') {
+                console.warn('[diagnostic] CSS may not be loaded on voting page.');
+            } else {
+                console.log('[diagnostic] CSS appears loaded on voting page.');
+            }
+        });
+    </script>
 </head>
+
 <body>
     <div class="container">
         <div id="voting-page" class="page active">
@@ -25,9 +43,12 @@
                 <div class="user-info-card">
                     <h3><i class="fas fa-user-circle"></i> Voter Information</h3>
                     <div id="voter-details">
-                        <p><i class="fas fa-user"></i> <strong>Name:</strong> <span id="voter-name">Loading...</span></p>
-                        <p><i class="fas fa-id-card"></i> <strong>Aadhaar:</strong> <span id="voter-aadhaar">Loading...</span></p>
-                        <p><i class="fas fa-check-circle"></i> <strong>Status:</strong> <span id="voter-status">Loading...</span></p>
+                        <p><i class="fas fa-user"></i> <strong>Name:</strong> <span id="voter-name">Loading...</span>
+                        </p>
+                        <p><i class="fas fa-id-card"></i> <strong>Aadhaar:</strong> <span
+                                id="voter-aadhaar">Loading...</span></p>
+                        <p><i class="fas fa-check-circle"></i> <strong>Status:</strong> <span
+                                id="voter-status">Loading...</span></p>
                     </div>
                 </div>
 
@@ -35,11 +56,11 @@
                     <div class="qr-section">
                         <h3><i class="fas fa-vote-yea"></i> Cast Your Vote</h3>
                         <p class="note">Please select your preferred candidate. Your vote is anonymous and secure.</p>
-                        
+
                         <div id="candidates-list">
                             <!-- Candidates will be loaded here -->
                         </div>
-                        
+
                         <div id="vote-confirmation" style="display: none; margin-top: 20px;">
                             <div class="success-message">
                                 <i class="fas fa-check-circle"></i> <strong>Confirm Your Vote</strong>
@@ -56,7 +77,7 @@
                                 </div>
                             </div>
                         </div>
-                        
+
                         <div id="vote-result" style="margin-top: 20px;"></div>
                     </div>
                 </div>
@@ -103,354 +124,208 @@
     </div>
 
     <script>
-        const API_BASE_URL = 'http://localhost:5000/api';
-        let selectedCandidate = null;
+    let selectedCandidate = null;
 
-        // Page functions
-        function goBackToDashboard() {
-            window.location.href = '/';
+    // Page functions
+    function goBackToDashboard() {
+        window.location.href = '/';
+    }
+
+    // Load user info
+    async function loadUserInfo() {
+        showModal('loading-modal', true);
+        document.getElementById('loading-text').textContent = 'Loading voter information...';
+
+        const username = localStorage.getItem('username');
+        if (!username) {
+            showModal('loading-modal', false);
+            showMessage('error', 'Error', 'Please login first');
+            setTimeout(() => window.location.href = '/', 2000);
+            return;
         }
 
-        // Modal functions
-        function showModal(modalId, show = true) {
-            const modal = document.getElementById(modalId);
-            if (modal) {
-                modal.style.display = show ? 'flex' : 'none';
-            }
-        }
+        try {
+            const { data } = await apiCall('/get_user_info', {
+                method: 'POST',
+                body: JSON.stringify({ username: username })
+            });
 
-        function showMessage(type, title, message) {
-            const icon = document.getElementById('message-icon');
-            if (type === 'success') {
-                icon.innerHTML = '<i class="fas fa-check-circle" style="color: #28a745; font-size: 50px;"></i>';
+            showModal('loading-modal', false);
+
+            if (data.success) {
+                updateVoterDisplay(data);
+                loadCandidates(data.candidates);
             } else {
-                icon.innerHTML = '<i class="fas fa-times-circle" style="color: #dc3545; font-size: 50px;"></i>';
+                showMessage('error', 'Error', data.message);
             }
-            
-            document.getElementById('message-title').textContent = title;
-            document.getElementById('message-content').textContent = message;
-            document.getElementById('message-close').onclick = () => showModal('message-modal', false);
-            showModal('message-modal', true);
+        } catch (error) {
+            showModal('loading-modal', false);
+            showMessage('error', 'Connection Error', 'Failed to load voter information');
+        }
+    }
+
+    function updateVoterDisplay(data) {
+        const user = data.user;
+
+        // Display voter info
+        document.getElementById('voter-name').textContent = user.qr_data?.name || user.full_name || user.username;
+        document.getElementById('voter-aadhaar').textContent = user.aadhaar_number || 'Not verified';
+
+        if (user.is_verified) {
+            document.getElementById('voter-status').innerHTML = '<span style="color: #28a745;">Verified</span>';
+
+            if (user.has_voted) {
+                document.getElementById('already-voted-section').style.display = 'block';
+                document.getElementById('voting-section').style.display = 'none';
+                document.getElementById('not-verified-section').style.display = 'none';
+
+                // Fetch and display vote details
+                loadVoteHistory();
+            } else {
+                document.getElementById('voting-section').style.display = 'block';
+                document.getElementById('already-voted-section').style.display = 'none';
+                document.getElementById('not-verified-section').style.display = 'none';
+            }
+        } else {
+            document.getElementById('voter-status').innerHTML = '<span style="color: #dc3545;">Not Verified</span>';
+            document.getElementById('not-verified-section').style.display = 'block';
+            document.getElementById('voting-section').style.display = 'none';
+            document.getElementById('already-voted-section').style.display = 'none';
+        }
+    }
+
+    async function loadVoteHistory() {
+        const username = localStorage.getItem('username');
+
+        try {
+            const { data } = await apiCall('/get_vote_history', {
+                method: 'POST',
+                body: JSON.stringify({ username: username })
+            });
+
+            if (data.success && data.has_voted) {
+                document.getElementById('vote-details').innerHTML = `
+                    <p><strong>Candidate:</strong> ${data.vote.candidate_name}</p>
+                    <p><strong>Party:</strong> ${data.vote.candidate_party}</p>
+                    <p><strong>Voted at:</strong> ${new Date(data.vote.voted_at).toLocaleString()}</p>
+                `;
+            }
+        } catch (error) {
+            console.error('Failed to load vote history:', error);
+        }
+    }
+
+    function loadCandidates(candidates) {
+        const candidatesList = document.getElementById('candidates-list');
+        candidatesList.innerHTML = '';
+
+        if (!candidates || candidates.length === 0) {
+            candidatesList.innerHTML = `
+                <div class="note">
+                    <i class="fas fa-info-circle"></i> No candidates available for voting yet.
+                </div>
+            `;
+            return;
+        }
+
+        candidates.forEach(candidate => {
+            const candidateCard = document.createElement('div');
+            candidateCard.className = 'candidate-card';
+            candidateCard.innerHTML = `
+                <div class="candidate-info">
+                    <h4>${candidate.name}</h4>
+                    <p class="candidate-party">${candidate.party}</p>
+                    <p><small>ID: ${candidate.candidate_id}</small></p>
+                </div>
+                <button class="btn btn-primary" onclick="selectCandidate(${candidate.candidate_id}, '${candidate.name}', '${candidate.party}')">
+                    <i class="fas fa-vote-yea"></i> Vote
+                </button>
+            `;
+            candidatesList.appendChild(candidateCard);
+        });
+    }
+
+    function selectCandidate(candidateId, candidateName, candidateParty) {
+        selectedCandidate = { candidateId, candidateName, candidateParty };
+
+        document.getElementById('selected-candidate-name').textContent = candidateName;
+        document.getElementById('selected-candidate-party').textContent = candidateParty;
+        document.getElementById('vote-confirmation').style.display = 'block';
+
+        // Scroll to confirmation
+        document.getElementById('vote-confirmation').scrollIntoView({ behavior: 'smooth' });
+    }
+
+    function cancelVote() {
+        selectedCandidate = null;
+        document.getElementById('vote-confirmation').style.display = 'none';
+    }
+
+    async function submitVote() {
+        if (!selectedCandidate) return;
+
+        showModal('loading-modal', true);
+        document.getElementById('loading-text').textContent = 'Submitting your vote...';
+
+        const username = localStorage.getItem('username');
+
+        try {
+            const { data } = await apiCall('/submit_vote', {
+                method: 'POST',
+                body: JSON.stringify({
+                    username: username,
+                    candidate_id: selectedCandidate.candidateId
+                })
+            });
+
+            showModal('loading-modal', false);
+
+            if (data.success) {
+                // Show success message
+                document.getElementById('vote-result').innerHTML = `
+                    <div class="success-message">
+                        <i class="fas fa-check-circle"></i> <strong>Vote Submitted Successfully!</strong>
+                        <p>Your vote for <strong>${selectedCandidate.candidateName}</strong> has been recorded.</p>
+                        <p>Thank you for participating in the election!</p>
+                    </div>
+                `;
+
+                // Hide voting section and show already voted section
+                document.getElementById('voting-section').style.display = 'none';
+                document.getElementById('already-voted-section').style.display = 'block';
+                document.getElementById('vote-confirmation').style.display = 'none';
+
+                // Update vote details
+                document.getElementById('vote-details').innerHTML = `
+                    <p><strong>Candidate:</strong> ${selectedCandidate.candidateName}</p>
+                    <p><strong>Party:</strong> ${selectedCandidate.candidateParty}</p>
+                    <p><strong>Time:</strong> ${new Date().toLocaleString()}</p>
+                `;
+
+                showMessage('success', 'Success', 'Your vote has been submitted successfully!');
+            } else {
+                showMessage('error', 'Vote Failed', data.message);
+            }
+        } catch (error) {
+            showModal('loading-modal', false);
+            showMessage('error', 'Submission Error', 'Failed to submit vote');
+        }
+    }
+
+    // Initialize on page load
+    document.addEventListener('DOMContentLoaded', function () {
+        // Check if user is logged in
+        const username = localStorage.getItem('username');
+        if (!username) {
+            showMessage('error', 'Access Denied', 'Please login first');
+            setTimeout(() => window.location.href = '/', 2000);
+            return;
         }
 
         // Load user info
-        async function loadUserInfo() {
-            showModal('loading-modal', true);
-            document.getElementById('loading-text').textContent = 'Loading voter information...';
-            
-            const username = localStorage.getItem('username');
-            if (!username) {
-                showModal('loading-modal', false);
-                showMessage('error', 'Error', 'Please login first');
-                setTimeout(() => window.location.href = '/', 2000);
-                return;
-            }
-            
-            try {
-                const response = await fetch(`${API_BASE_URL}/get_user_info`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ username: username })
-                });
-                
-                const data = await response.json();
-                showModal('loading-modal', false);
-                
-                if (data.success) {
-                    updateVoterDisplay(data);
-                    loadCandidates(data.candidates);
-                } else {
-                    showMessage('error', 'Error', data.message);
-                }
-            } catch (error) {
-                showModal('loading-modal', false);
-                showMessage('error', 'Connection Error', 'Failed to load voter information');
-            }
-        }
-
-        function updateVoterDisplay(data) {
-            const user = data.user;
-            
-            // Display voter info
-            document.getElementById('voter-name').textContent = user.qr_data?.name || user.full_name || user.username;
-            document.getElementById('voter-aadhaar').textContent = user.aadhaar_number || 'Not verified';
-            
-            if (user.is_verified) {
-                document.getElementById('voter-status').innerHTML = '<span style="color: #28a745;">Verified</span>';
-                
-                if (user.has_voted) {
-                    document.getElementById('already-voted-section').style.display = 'block';
-                    document.getElementById('voting-section').style.display = 'none';
-                    document.getElementById('not-verified-section').style.display = 'none';
-                    
-                    // Fetch and display vote details
-                    loadVoteHistory();
-                } else {
-                    document.getElementById('voting-section').style.display = 'block';
-                    document.getElementById('already-voted-section').style.display = 'none';
-                    document.getElementById('not-verified-section').style.display = 'none';
-                }
-            } else {
-                document.getElementById('voter-status').innerHTML = '<span style="color: #dc3545;">Not Verified</span>';
-                document.getElementById('not-verified-section').style.display = 'block';
-                document.getElementById('voting-section').style.display = 'none';
-                document.getElementById('already-voted-section').style.display = 'none';
-            }
-        }
-
-        async function loadVoteHistory() {
-            const username = localStorage.getItem('username');
-            
-            try {
-                const response = await fetch(`${API_BASE_URL}/get_vote_history`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ username: username })
-                });
-                
-                const data = await response.json();
-                
-                if (data.success && data.has_voted) {
-                    document.getElementById('vote-details').innerHTML = `
-                        <p><strong>Candidate:</strong> ${data.vote.candidate_name}</p>
-                        <p><strong>Party:</strong> ${data.vote.candidate_party}</p>
-                        <p><strong>Voted at:</strong> ${new Date(data.vote.voted_at).toLocaleString()}</p>
-                    `;
-                }
-            } catch (error) {
-                console.error('Failed to load vote history:', error);
-            }
-        }
-
-        function loadCandidates(candidates) {
-            const candidatesList = document.getElementById('candidates-list');
-            candidatesList.innerHTML = '';
-            
-            if (!candidates || candidates.length === 0) {
-                candidatesList.innerHTML = `
-                    <div class="note">
-                        <i class="fas fa-info-circle"></i> No candidates available for voting yet.
-                    </div>
-                `;
-                return;
-            }
-            
-            candidates.forEach(candidate => {
-                const candidateCard = document.createElement('div');
-                candidateCard.className = 'candidate-card';
-                candidateCard.innerHTML = `
-                    <div class="candidate-info">
-                        <h4>${candidate.name}</h4>
-                        <p class="candidate-party">${candidate.party}</p>
-                        <p><small>ID: ${candidate.candidate_id}</small></p>
-                    </div>
-                    <button class="btn btn-primary" onclick="selectCandidate(${candidate.candidate_id}, '${candidate.name}', '${candidate.party}')">
-                        <i class="fas fa-vote-yea"></i> Vote
-                    </button>
-                `;
-                candidatesList.appendChild(candidateCard);
-            });
-        }
-
-        function selectCandidate(candidateId, candidateName, candidateParty) {
-            selectedCandidate = { candidateId, candidateName, candidateParty };
-            
-            document.getElementById('selected-candidate-name').textContent = candidateName;
-            document.getElementById('selected-candidate-party').textContent = candidateParty;
-            document.getElementById('vote-confirmation').style.display = 'block';
-            
-            // Scroll to confirmation
-            document.getElementById('vote-confirmation').scrollIntoView({ behavior: 'smooth' });
-        }
-
-        function cancelVote() {
-            selectedCandidate = null;
-            document.getElementById('vote-confirmation').style.display = 'none';
-        }
-
-        async function submitVote() {
-            if (!selectedCandidate) return;
-            
-            showModal('loading-modal', true);
-            document.getElementById('loading-text').textContent = 'Submitting your vote...';
-            
-            const username = localStorage.getItem('username');
-            
-            try {
-                const response = await fetch(`${API_BASE_URL}/submit_vote`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        username: username,
-                        candidate_id: selectedCandidate.candidateId
-                    })
-                });
-                
-                const data = await response.json();
-                showModal('loading-modal', false);
-                
-                if (data.success) {
-                    // Show success message
-                    document.getElementById('vote-result').innerHTML = `
-                        <div class="success-message">
-                            <i class="fas fa-check-circle"></i> <strong>Vote Submitted Successfully!</strong>
-                            <p>Your vote for <strong>${selectedCandidate.candidateName}</strong> has been recorded.</p>
-                            <p>Thank you for participating in the election!</p>
-                            <p><small>Vote ID: ${Date.now()}</small></p>
-                        </div>
-                    `;
-                    
-                    // Hide voting section and show already voted section
-                    document.getElementById('voting-section').style.display = 'none';
-                    document.getElementById('already-voted-section').style.display = 'block';
-                    document.getElementById('vote-confirmation').style.display = 'none';
-                    
-                    // Update vote details
-                    document.getElementById('vote-details').innerHTML = `
-                        <p><strong>Candidate:</strong> ${selectedCandidate.candidateName}</p>
-                        <p><strong>Party:</strong> ${selectedCandidate.candidateParty}</p>
-                        <p><strong>Time:</strong> ${new Date().toLocaleString()}</p>
-                    `;
-                    
-                    showMessage('success', 'Success', 'Your vote has been submitted successfully!');
-                } else {
-                    showMessage('error', 'Vote Failed', data.message);
-                }
-            } catch (error) {
-                showModal('loading-modal', false);
-                showMessage('error', 'Submission Error', 'Failed to submit vote');
-            }
-        }
-
-        // Initialize on page load
-        document.addEventListener('DOMContentLoaded', function() {
-            // Check if user is logged in
-            const username = localStorage.getItem('username');
-            if (!username) {
-                showMessage('error', 'Access Denied', 'Please login first');
-                setTimeout(() => window.location.href = '/', 2000);
-                return;
-            }
-            
-            // Setup modal close button
-            const closeBtn = document.getElementById('message-close');
-            if (closeBtn) {
-                closeBtn.addEventListener('click', function() {
-                    showModal('message-modal', false);
-                });
-            }
-            
-            // Close modals when clicking outside
-            document.querySelectorAll('.modal').forEach(modal => {
-                modal.addEventListener('click', function(e) {
-                    if (e.target === modal) {
-                        showModal(modal.id, false);
-                    }
-                });
-            });
-            
-            // Load user info
-            loadUserInfo();
-        });
-    </script>
-
-    <style>
-        .candidate-card {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 20px;
-            margin-bottom: 15px;
-            background: white;
-            border-radius: 10px;
-            border: 2px solid #e9ecef;
-            transition: all 0.3s ease;
-        }
-        
-        .candidate-card:hover {
-            transform: translateY(-3px);
-            border-color: #667eea;
-            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
-        }
-        
-        .candidate-info h4 {
-            color: #333;
-            margin-bottom: 5px;
-            font-size: 1.2rem;
-        }
-        
-        .candidate-party {
-            color: #666;
-            font-size: 0.9rem;
-            padding: 3px 10px;
-            background: #f8f9fa;
-            border-radius: 15px;
-            display: inline-block;
-            margin-bottom: 5px;
-        }
-        
-        .vote-actions {
-            display: flex;
-            gap: 10px;
-            margin-top: 15px;
-        }
-        
-        .vote-info {
-            margin-top: 15px;
-            padding: 15px;
-            background: #f8f9fa;
-            border-radius: 8px;
-            border-left: 4px solid #28a745;
-        }
-        
-        .vote-info p {
-            margin: 5px 0;
-        }
-        
-        .validation-error {
-            color: #dc3545;
-            padding: 15px;
-            background: #fff5f5;
-            border-radius: 8px;
-            border: 2px solid #dc3545;
-            margin: 15px 0;
-        }
-        
-        .validation-success {
-            color: #28a745;
-            padding: 15px;
-            background: #f0f8ff;
-            border-radius: 8px;
-            border: 2px solid #28a745;
-            margin: 15px 0;
-        }
-        
-        .success-message {
-            color: #28a745;
-            padding: 15px;
-            background: #f0f8ff;
-            border-radius: 8px;
-            border: 2px solid #28a745;
-            margin: 15px 0;
-        }
-        
-        @media (max-width: 768px) {
-            .candidate-card {
-                flex-direction: column;
-                align-items: flex-start;
-                gap: 15px;
-            }
-            
-            .candidate-card button {
-                align-self: flex-end;
-            }
-        }
-    </style>
+        loadUserInfo();
+    });
+</script>
 </body>
+
 </html>
