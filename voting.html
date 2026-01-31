@@ -222,7 +222,7 @@
         if (!candidates || candidates.length === 0) {
             candidatesList.innerHTML = `
                 <div class="note">
-                    <i class="fas fa-info-circle"></i> No candidates available for voting yet.
+                    <i class="fas fa-info-circle"></i> No candidates available for voting yet. Please contact the administrator.
                 </div>
             `;
             return;
@@ -237,7 +237,7 @@
                     <p class="candidate-party">${candidate.party}</p>
                     <p><small>ID: ${candidate.candidate_id}</small></p>
                 </div>
-                <button class="btn btn-primary" onclick="selectCandidate(${candidate.candidate_id}, '${candidate.name}', '${candidate.party}')">
+                <button class="btn btn-primary" onclick="selectCandidate(${candidate.candidate_id}, '${candidate.name.replace(/'/g, "\\'")}', '${candidate.party.replace(/'/g, "\\'")}')">
                     <i class="fas fa-vote-yea"></i> Vote
                 </button>
             `;

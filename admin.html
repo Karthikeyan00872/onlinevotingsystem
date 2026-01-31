@@ -278,7 +278,7 @@
         if (!candidates || candidates.length === 0) {
             container.innerHTML = `
                 <div class="note">
-                    <i class="fas fa-info-circle"></i> No candidates available yet.
+                    <i class="fas fa-info-circle"></i> No candidates available yet. Add candidates from the "Add Candidate" section.
                 </div>
             `;
             return;
@@ -336,7 +336,7 @@
             } else {
                 container.innerHTML = `
                     <div class="note">
-                        <i class="fas fa-info-circle"></i> No candidates found.
+                        <i class="fas fa-info-circle"></i> No candidates found. Add candidates from the "Add Candidate" section.
                     </div>
                 `;
             }
@@ -355,7 +355,7 @@
         if (!candidates || candidates.length === 0) {
             container.innerHTML = `
                 <div class="note">
-                    <i class="fas fa-info-circle"></i> No candidates available.
+                    <i class="fas fa-info-circle"></i> No candidates available. Add candidates from the "Add Candidate" section.
                 </div>
             `;
             return;
@@ -449,10 +449,10 @@
     }
 
     function removeCandidateById() {
-        const candidateId = parseInt(document.getElementById('remove-candidate-id').value.trim());
+        const candidateId = document.getElementById('remove-candidate-id').value.trim();
         
-        if (!candidateId || isNaN(candidateId)) {
-            showMessage('error', 'Error', 'Please enter a valid candidate ID');
+        if (!candidateId) {
+            showMessage('error', 'Error', 'Please enter a candidate ID');
             return;
         }
         

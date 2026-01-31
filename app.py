@@ -133,10 +133,103 @@ except Exception as e:
 
 # In-memory fallback storage (if MongoDB not available)
 if not mongodb_connected:
-    users_db = {}
-    admins_db = {}
-    candidates_db = {}
-    votes_db = []
+    # Use file-backed JSON storage as a simple persistent fallback
+    DATA_DIR = 'data'
+    USERS_FILE = os.path.join(DATA_DIR, 'users.json')
+    ADMINS_FILE = os.path.join(DATA_DIR, 'admins.json')
+    CANDIDATES_FILE = os.path.join(DATA_DIR, 'candidates.json')
+    VOTES_FILE = os.path.join(DATA_DIR, 'votes.json')
+
+    if not os.path.exists(DATA_DIR):
+        os.makedirs(DATA_DIR)
+
+    def _json_serializer(obj):
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        raise TypeError(f"Type {type(obj)} not serializable")
+
+    def _save_json(file_path, data):
+        try:
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2, default=_json_serializer)
+        except Exception as e:
+            print(f"Warning: Failed to save {file_path}: {e}")
+
+    def _load_json(file_path, default):
+        try:
+            if os.path.exists(file_path):
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+        except Exception as e:
+            print(f"Warning: Failed to load {file_path}: {e}")
+        return default
+
+    # Load users and admins
+    default_users = {
+        'admin': {
+            'password': 'admin123',
+            'role': 'admin',
+            'full_name': 'System Administrator'
+        }
+    }
+    users_db = _load_json(USERS_FILE, default_users)
+    admins_db = _load_json(ADMINS_FILE, {})
+
+    # Ensure test voter exists
+    if not users_db.get('testvoter'):
+        users_db['testvoter'] = {
+            'password': 'test123',
+            'role': 'voter',
+            'full_name': 'Test Voter',
+            'aadhaar_number': '123456789012',
+            'is_verified': True,
+            'has_voted': False
+        }
+
+    # Load candidates (keys stored as strings in JSON, convert to int)
+    raw_candidates = _load_json(CANDIDATES_FILE, {})
+    try:
+        candidates_db = {int(k): v for k, v in raw_candidates.items()} if isinstance(raw_candidates, dict) else {}
+    except Exception:
+        candidates_db = {}
+
+    if len(candidates_db) == 0:
+        candidates_db[1] = {
+            'candidate_id': 1,
+            'name': 'John Doe',
+            'party': 'Democratic Party',
+            'is_active': True,
+            'votes': 0
+        }
+        candidates_db[2] = {
+            'candidate_id': 2,
+            'name': 'Jane Smith',
+            'party': 'Republican Party',
+            'is_active': True,
+            'votes': 0
+        }
+
+    votes_db = _load_json(VOTES_FILE, [])
+
+    # Save helpers
+    def save_users():
+        _save_json(USERS_FILE, users_db)
+
+    def save_admins():
+        _save_json(ADMINS_FILE, admins_db)
+
+    def save_candidates():
+        serializable = {str(k): v for k, v in candidates_db.items()}
+        _save_json(CANDIDATES_FILE, serializable)
+
+    def save_votes():
+        _save_json(VOTES_FILE, votes_db)
+
+    # Persist defaults if any
+    save_users()
+    save_admins()
+    save_candidates()
+    save_votes()
 
 # Helper functions for MongoDB/fallback
 def get_user(username):
@@ -157,6 +250,7 @@ def get_admin(username):
 
 def get_candidate(candidate_id):
     """Get candidate from MongoDB or fallback"""
+    candidate_id = int(candidate_id) if isinstance(candidate_id, (str, float)) else candidate_id
     if mongodb_connected and candidates_collection is not None:
         return candidates_collection.find_one({"candidate_id": candidate_id})
     elif not mongodb_connected:
@@ -187,6 +281,10 @@ def create_user(user_data):
     elif not mongodb_connected:
         username = user_data['username']
         users_db[username] = user_data
+        try:
+            save_users()
+        except Exception:
+            pass
         return username
     return None
 
@@ -198,6 +296,10 @@ def create_admin(admin_data):
     elif not mongodb_connected:
         username = admin_data['username']
         admins_db[username] = admin_data
+        try:
+            save_admins()
+        except Exception:
+            pass
         return username
     return None
 
@@ -209,6 +311,10 @@ def create_candidate(candidate_data):
     elif not mongodb_connected:
         candidate_id = candidate_data['candidate_id']
         candidates_db[candidate_id] = candidate_data
+        try:
+            save_candidates()
+        except Exception:
+            pass
         return candidate_id
     return None
 
@@ -219,6 +325,10 @@ def create_vote(vote_data):
         return result.inserted_id
     elif not mongodb_connected:
         votes_db.append(vote_data)
+        try:
+            save_votes()
+        except Exception:
+            pass
         return vote_data['vote_id']
     return None
 
@@ -228,13 +338,37 @@ def update_user(username, update_data):
         users_collection.update_one({"username": username}, {"$set": update_data})
     elif not mongodb_connected and username in users_db:
         users_db[username].update(update_data)
+        try:
+            save_users()
+        except Exception:
+            pass
 
 def update_candidate(candidate_id, update_data):
     """Update candidate in MongoDB or fallback"""
+    candidate_id = int(candidate_id) if isinstance(candidate_id, (str, float)) else candidate_id
     if mongodb_connected and candidates_collection is not None:
         candidates_collection.update_one({"candidate_id": candidate_id}, {"$set": update_data})
     elif not mongodb_connected and candidate_id in candidates_db:
         candidates_db[candidate_id].update(update_data)
+        try:
+            save_candidates()
+        except Exception:
+            pass
+
+def delete_candidate(candidate_id):
+    """Delete candidate from MongoDB or fallback"""
+    candidate_id = int(candidate_id) if isinstance(candidate_id, (str, float)) else candidate_id
+    if mongodb_connected and candidates_collection is not None:
+        result = candidates_collection.delete_one({"candidate_id": candidate_id})
+        return result.deleted_count > 0
+    elif not mongodb_connected and candidate_id in candidates_db:
+        del candidates_db[candidate_id]
+        try:
+            save_candidates()
+        except Exception:
+            pass
+        return True
+    return False
 
 def get_total_voters():
     """Get total number of voters"""
@@ -308,74 +442,37 @@ def init_default_data():
     """Initialize default test data"""
     print("🔍 Initializing default data...")
     
-    # Add test voter if not exists
-    if mongodb_connected and users_collection is not None:
-        if not users_collection.find_one({"username": "testvoter"}):
-            voter_data = {
-                "username": "testvoter",
-                "password": "test123",
-                "role": "voter",
-                "full_name": "Test Voter",
-                "aadhaar_number": "123456789012",
-                "is_verified": True,
-                "has_voted": False,
-                "created_at": datetime.now()
-            }
-            users_collection.insert_one(voter_data)
-            print("✅ Test voter account created")
-    elif not mongodb_connected and "testvoter" not in users_db:
-        users_db["testvoter"] = {
-            "username": "testvoter",
-            "password": "test123",
-            "role": "voter",
-            "full_name": "Test Voter",
-            "aadhaar_number": "123456789012",
-            "is_verified": True,
-            "has_voted": False
-        }
-        print("✅ Test voter account created (in-memory)")
+    # Remove all existing test data
+    if mongodb_connected:
+        # Remove test voter if exists
+        users_collection.delete_one({"username": "testvoter"})
+        
+        # Remove all existing candidates
+        candidates_collection.delete_many({})
+        
+        # Remove all existing votes
+        votes_collection.delete_many({})
+    else:
+        # Remove test voter from in-memory
+        if "testvoter" in users_db:
+            del users_db["testvoter"]
+        
+        # Clear all candidates
+        candidates_db.clear()
+        
+        # Clear all votes
+        votes_db.clear()
+        
+        # Persist cleared state to disk when using file-backed fallback
+        try:
+            save_users()
+            save_candidates()
+            save_votes()
+        except Exception:
+            pass
     
-    # Add default candidates if none exist
-    if mongodb_connected and candidates_collection is not None:
-        if candidates_collection.count_documents({}) == 0:
-            candidates = [
-                {
-                    "candidate_id": 1,
-                    "name": "John Doe",
-                    "party": "Democratic Party",
-                    "is_active": True,
-                    "votes": 0,
-                    "created_at": datetime.now()
-                },
-                {
-                    "candidate_id": 2,
-                    "name": "Jane Smith",
-                    "party": "Republican Party",
-                    "is_active": True,
-                    "votes": 0,
-                    "created_at": datetime.now()
-                }
-            ]
-            candidates_collection.insert_many(candidates)
-            print("✅ Default candidates created")
-    elif not mongodb_connected and len(candidates_db) == 0:
-        candidates_db[1] = {
-            'candidate_id': 1,
-            'name': 'John Doe',
-            'party': 'Democratic Party',
-            'is_active': True,
-            'votes': 0
-        }
-        candidates_db[2] = {
-            'candidate_id': 2,
-            'name': 'Jane Smith',
-            'party': 'Republican Party',
-            'is_active': True,
-            'votes': 0
-        }
-        print("✅ Default candidates created (in-memory)")
-    
-    print("✅ Default data initialization complete")
+    print("✅ All default data cleared - starting with empty database")
+    return True
 
 def requires_auth(f):
     """Decorator for routes requiring authentication"""
@@ -929,26 +1026,36 @@ def admin_remove_candidate():
     """Admin: Remove a candidate"""
     try:
         data = request.get_json()
-        candidate_id = int(data.get('candidate_id', 0))
+        candidate_id = data.get('candidate_id')
         
-        if not candidate_id:
+        if candidate_id is None:
             return jsonify({'success': False, 'message': 'Candidate ID is required'})
+        
+        # Convert to integer if it's a string
+        try:
+            candidate_id = int(candidate_id)
+        except (ValueError, TypeError):
+            return jsonify({'success': False, 'message': 'Invalid candidate ID format'})
         
         candidate = get_candidate(candidate_id)
         if not candidate:
             return jsonify({'success': False, 'message': 'Candidate not found'})
         
-        candidate_name = candidate.get('name')
+        candidate_name = candidate.get('name', 'Unknown')
         
-        # Mark candidate as inactive instead of deleting
-        update_candidate(candidate_id, {'is_active': False})
+        # Delete the candidate completely (not just mark as inactive)
+        deleted = delete_candidate(candidate_id)
         
-        return jsonify({
-            'success': True,
-            'message': f'Candidate {candidate_name} removed successfully'
-        })
+        if deleted:
+            return jsonify({
+                'success': True,
+                'message': f'Candidate {candidate_name} removed successfully'
+            })
+        else:
+            return jsonify({'success': False, 'message': 'Failed to remove candidate'})
         
     except Exception as e:
+        print(f"Error removing candidate: {e}")
         return jsonify({'success': False, 'message': f'Failed to remove candidate: {str(e)}'})
 
 # Error handlers
@@ -968,17 +1075,24 @@ if __name__ == '__main__':
     print(f"📊 MongoDB: {'✅ Connected' if mongodb_connected else '❌ Not Connected'}")
     print(f"📷 QR Scanning: {'✅ Available' if QR_SCANNING_AVAILABLE else '❌ Unavailable'}")
     
-    # Initialize default data
+    # Initialize admin but do NOT clear existing data by default (preserve persisted data)
     admin_created = init_default_admin()
-    init_default_data()
+    # To explicitly reset default test data, set environment variable RESET_DEFAULTS=1
+    if os.environ.get('RESET_DEFAULTS') == '1':
+        init_default_data()  # Only run when explicitly requested
     
-    print("\n🔑 LOGIN CREDENTIALS:")
+    print("\n🔑 ADMIN LOGIN CREDENTIALS:")
     if admin_created:
-        print("   Admin:        admin / admin123")
+        print("   Username: admin")
+        print("   Password: admin123")
     else:
         print("   ❌ Admin account could not be created")
     
-    print("   Test Voter:   testvoter / test123")
+    print("\n📝 IMPORTANT:")
+    print("   - All default candidates and test data have been removed")
+    print("   - You can add new candidates from the admin panel")
+    print("   - No default test voter exists (register new voters)")
+    
     print("\n🌐 Server URL: http://127.0.0.1:5000")
     print("   Admin Panel: http://127.0.0.1:5000/admin")
     print("="*60)
