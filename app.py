@@ -1,5 +1,5 @@
 # app.py
-from flask import Flask, render_template, request, jsonify, redirect, url_for, session
+from flask import Flask, render_template, request, jsonify, redirect, url_for, session, send_from_directory
 from flask_cors import CORS
 from pymongo import MongoClient
 from bson import ObjectId
@@ -13,6 +13,7 @@ import zlib
 from datetime import datetime, timedelta
 from functools import wraps
 import uuid
+from werkzeug.utils import secure_filename
 
 # Try to import QR scanning libraries
 try:
@@ -105,6 +106,15 @@ class AadhaarQRDecoder:
 app = Flask(__name__, static_folder='.', static_url_path='')
 app.secret_key = 'your-secret-key-here-change-in-production'
 CORS(app)
+
+# Configuration for file uploads
+app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024  # 5MB max file size
+app.config['UPLOAD_FOLDER'] = 'static/candidate_images'
+app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg', 'gif'}
+
+def allowed_file(filename):
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
 
 # MongoDB connection
 try:
@@ -405,21 +415,21 @@ def init_default_admin():
             print("✅ Admin account found in MongoDB")
             return True
         
-            print("⚠️ Admin account not found, creating...")
-            admin_data = {
-                "username": "admin",
-                "password": "admin123",
-                "role": "admin",
-                "full_name": "System Administrator",
-                "created_at": datetime.now()
-            }
-            try:
-                admins_collection.insert_one(admin_data)
-                print("✅ Admin account created in MongoDB")
-                return True
-            except Exception as e:
-                print(f"❌ Failed to create admin in MongoDB: {e}")
-                return False
+        print("⚠️ Admin account not found, creating...")
+        admin_data = {
+            "username": "admin",
+            "password": "admin123",
+            "role": "admin",
+            "full_name": "System Administrator",
+            "created_at": datetime.now()
+        }
+        try:
+            admins_collection.insert_one(admin_data)
+            print("✅ Admin account created in MongoDB")
+            return True
+        except Exception as e:
+            print(f"❌ Failed to create admin in MongoDB: {e}")
+            return False
     elif not mongodb_connected:
         if "admin" in admins_db:
             print("✅ Admin account found in memory")
@@ -534,6 +544,11 @@ def admin_page():
 def voting_page():
     """Serve the voting page"""
     return app.send_static_file('voting.html')
+
+@app.route('/static/candidate_images/<filename>')
+def serve_candidate_image(filename):
+    """Serve candidate images"""
+    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
 @app.route('/api/test', methods=['GET'])
 def test_api():
@@ -677,7 +692,7 @@ def admin_login():
             return jsonify({'success': False, 'message': 'Username and password are required'})
         
         # Special case: if trying to login as admin with default password, create if not exists
-        
+        if username == "admin" and password == "admin123":
             admin = get_admin("admin")
             if not admin:
                 print("⚠️ Admin account not found, creating on-demand...")
@@ -984,11 +999,10 @@ def admin_get_results():
 
 @app.route('/api/admin/add_candidate', methods=['POST'])
 def admin_add_candidate():
-    """Admin: Add a new candidate"""
+    """Admin: Add a new candidate with optional image"""
     try:
-        data = request.get_json()
-        name = data.get('name', '').strip()
-        party = data.get('party', '').strip()
+        name = request.form.get('name', '').strip()
+        party = request.form.get('party', '').strip()
         
         if not name or not party:
             return jsonify({'success': False, 'message': 'Candidate name and party are required'})
@@ -998,10 +1012,26 @@ def admin_add_candidate():
         existing_ids = [c.get('candidate_id', 0) for c in all_candidates]
         new_id = max(existing_ids) + 1 if existing_ids else 1
         
+        # Handle image upload
+        image_url = None
+        if 'image' in request.files:
+            file = request.files['image']
+            if file and file.filename and allowed_file(file.filename):
+                # Create upload folder if it doesn't exist
+                if not os.path.exists(app.config['UPLOAD_FOLDER']):
+                    os.makedirs(app.config['UPLOAD_FOLDER'])
+                
+                # Generate secure filename
+                filename = secure_filename(f"candidate_{new_id}_{file.filename}")
+                file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+                file.save(file_path)
+                image_url = f'/static/candidate_images/{filename}'
+        
         candidate_data = {
             'candidate_id': new_id,
             'name': name,
             'party': party,
+            'image_url': image_url,
             'is_active': True,
             'votes': 0,
             'created_at': datetime.now()
@@ -1013,12 +1043,14 @@ def admin_add_candidate():
             return jsonify({
                 'success': True,
                 'message': f'Candidate {name} added successfully',
-                'candidate_id': new_id
+                'candidate_id': new_id,
+                'image_url': image_url
             })
         else:
             return jsonify({'success': False, 'message': 'Failed to add candidate'})
         
     except Exception as e:
+        print(f"Error adding candidate: {e}")
         return jsonify({'success': False, 'message': f'Failed to add candidate: {str(e)}'})
 
 @app.route('/api/admin/remove_candidate', methods=['POST'])
@@ -1100,6 +1132,10 @@ if __name__ == '__main__':
     # Create necessary directories
     if not os.path.exists('temp'):
         os.makedirs('temp')
+    
+    # Create candidate images directory
+    if not os.path.exists(app.config['UPLOAD_FOLDER']):
+        os.makedirs(app.config['UPLOAD_FOLDER'])
     
     # Run the Flask app
     app.run(host='127.0.0.1', port=5000, debug=True, use_reloader=False)

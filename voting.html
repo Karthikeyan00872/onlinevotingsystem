@@ -231,15 +231,25 @@
         candidates.forEach(candidate => {
             const candidateCard = document.createElement('div');
             candidateCard.className = 'candidate-card';
+            
+            // Use candidate image if available, otherwise use placeholder
+            const imageUrl = candidate.image_url || 'https://via.placeholder.com/100?text=No+Image';
+            
             candidateCard.innerHTML = `
-                <div class="candidate-info">
-                    <h4>${candidate.name}</h4>
-                    <p class="candidate-party">${candidate.party}</p>
-                    <p><small>ID: ${candidate.candidate_id}</small></p>
+                <div class="candidate-header" style="display: flex; align-items: center; gap: 15px; margin-bottom: 10px;">
+                    <img src="${imageUrl}" alt="${candidate.name}" 
+                         style="width: 80px; height: 80px; border-radius: 50%; object-fit: cover; border: 2px solid #ddd;">
+                    <div class="candidate-basic-info" style="flex: 1;">
+                        <h4 style="margin: 0; color: #333;">${candidate.name}</h4>
+                        <p class="candidate-party" style="color: #666; margin: 5px 0; padding: 3px 10px; background: #f8f9fa; border-radius: 15px; display: inline-block;">${candidate.party}</p>
+                        <p style="color: #777; font-size: 0.9rem; margin: 5px 0;"><i class="fas fa-hashtag"></i> ID: ${candidate.candidate_id}</p>
+                    </div>
                 </div>
-                <button class="btn btn-primary" onclick="selectCandidate(${candidate.candidate_id}, '${candidate.name.replace(/'/g, "\\'")}', '${candidate.party.replace(/'/g, "\\'")}')">
-                    <i class="fas fa-vote-yea"></i> Vote
-                </button>
+                <div style="text-align: center;">
+                    <button class="btn btn-primary" onclick="selectCandidate(${candidate.candidate_id}, '${candidate.name.replace(/'/g, "\\'")}', '${candidate.party.replace(/'/g, "\\'")}')">
+                        <i class="fas fa-vote-yea"></i> Vote for ${candidate.name}
+                    </button>
+                </div>
             `;
             candidatesList.appendChild(candidateCard);
         });

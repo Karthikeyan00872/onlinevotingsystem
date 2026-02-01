@@ -119,57 +119,87 @@
                     </div>
                 </div>
 
-                <div class="admin-sections">
-                    <!-- Voting Results Section -->
-                    <div class="admin-section">
-                        <h3><i class="fas fa-chart-bar"></i> Voting Results</h3>
-                        <div id="results-container">
-                            <div class="loading">Loading results...</div>
+                <!-- Voting Results Section - Full Row -->
+                <div class="admin-section full-row">
+                    <h3><i class="fas fa-chart-bar"></i> Voting Results</h3>
+                    <div id="results-container">
+                        <div class="loading">Loading results...</div>
+                    </div>
+                    <button class="btn btn-primary" onclick="refreshResults()">
+                        <i class="fas fa-sync-alt"></i> Refresh Results
+                    </button>
+                </div>
+
+                <div class="admin-columns">
+                    <!-- Left Column -->
+                    <div class="admin-column">
+                        <!-- Add Candidate Section -->
+                        <div class="admin-section">
+                            <h3><i class="fas fa-user-plus"></i> Add Candidate</h3>
+                            <div class="form-group">
+                                <label for="candidate-name">Candidate Name</label>
+                                <input type="text" id="candidate-name" placeholder="Enter candidate name">
+                            </div>
+                            <div class="form-group">
+                                <label for="candidate-party">Party</label>
+                                <input type="text" id="candidate-party" placeholder="Enter party name">
+                            </div>
+                            
+                            <!-- Candidate Image Upload -->
+                            <div class="form-group">
+                                <label for="candidate-image">Candidate Image/Symbol</label>
+                                <div class="file-upload-area" onclick="document.getElementById('candidate-image').click()">
+                                    <i class="fas fa-cloud-upload-alt"></i>
+                                    <h6>Click to Upload Candidate Image</h6>
+                                    <p>Upload candidate photo or party symbol</p>
+                                    <p>Supported formats: PNG, JPG, JPEG, GIF</p>
+                                    <p>Max file size: 5MB</p>
+                                </div>
+                                <input type="file" id="candidate-image" accept="image/*" style="display: none;" 
+                                       onchange="handleCandidateImageUpload()">
+                                <div id="candidate-image-preview" style="display: none; margin-top: 10px; text-align: center;">
+                                    <img id="candidate-preview-img" src="#" alt="Candidate Preview" 
+                                         style="max-width: 150px; max-height: 150px; border-radius: 8px; border: 2px solid #ddd;">
+                                    <p style="margin-top: 5px;"><i class="fas fa-image"></i> <span id="candidate-file-name"></span></p>
+                                    <button type="button" class="btn btn-small btn-danger" onclick="removeCandidateImage()" 
+                                            style="margin-top: 5px;">
+                                        <i class="fas fa-trash"></i> Remove Image
+                                    </button>
+                                </div>
+                            </div>
+                            
+                            <button class="btn btn-primary" onclick="addCandidate()">
+                                <i class="fas fa-plus"></i> Add Candidate
+                            </button>
+                            <div id="candidate-result"></div>
                         </div>
-                        <button class="btn btn-primary" onclick="refreshResults()">
-                            <i class="fas fa-sync-alt"></i> Refresh Results
-                        </button>
+
+                        <!-- Remove Candidate Section -->
+                        <div class="admin-section">
+                            <h3><i class="fas fa-user-minus"></i> Remove Candidate</h3>
+                            <div class="form-group">
+                                <label for="remove-candidate-id">Candidate ID to Remove</label>
+                                <input type="number" id="remove-candidate-id" placeholder="Enter candidate ID">
+                            </div>
+                            <button class="btn btn-danger" onclick="removeCandidateById()">
+                                <i class="fas fa-trash"></i> Remove Candidate
+                            </button>
+                            <div id="remove-candidate-result"></div>
+                        </div>
                     </div>
 
-                    <!-- Add Candidate Section -->
-                    <div class="admin-section">
-                        <h3><i class="fas fa-user-plus"></i> Add Candidate</h3>
-                        <div class="form-group">
-                            <label for="candidate-name">Candidate Name</label>
-                            <input type="text" id="candidate-name" placeholder="Enter candidate name">
+                    <!-- Right Column -->
+                    <div class="admin-column">
+                        <!-- View All Candidates Section -->
+                        <div class="admin-section">
+                            <h3><i class="fas fa-list"></i> All Candidates</h3>
+                            <div id="all-candidates-container">
+                                <div class="loading">Loading candidates...</div>
+                            </div>
+                            <button class="btn btn-primary" onclick="loadAllCandidates()">
+                                <i class="fas fa-sync-alt"></i> Refresh Candidates
+                            </button>
                         </div>
-                        <div class="form-group">
-                            <label for="candidate-party">Party</label>
-                            <input type="text" id="candidate-party" placeholder="Enter party name">
-                        </div>
-                        <button class="btn btn-primary" onclick="addCandidate()">
-                            <i class="fas fa-plus"></i> Add Candidate
-                        </button>
-                        <div id="candidate-result"></div>
-                    </div>
-
-                    <!-- View All Candidates Section -->
-                    <div class="admin-section">
-                        <h3><i class="fas fa-list"></i> All Candidates</h3>
-                        <div id="all-candidates-container">
-                            <div class="loading">Loading candidates...</div>
-                        </div>
-                        <button class="btn btn-primary" onclick="loadAllCandidates()">
-                            <i class="fas fa-sync-alt"></i> Refresh Candidates
-                        </button>
-                    </div>
-
-                    <!-- Remove Candidate Section -->
-                    <div class="admin-section">
-                        <h3><i class="fas fa-user-minus"></i> Remove Candidate</h3>
-                        <div class="form-group">
-                            <label for="remove-candidate-id">Candidate ID to Remove</label>
-                            <input type="number" id="remove-candidate-id" placeholder="Enter candidate ID">
-                        </div>
-                        <button class="btn btn-danger" onclick="removeCandidateById()">
-                            <i class="fas fa-trash"></i> Remove Candidate
-                        </button>
-                        <div id="remove-candidate-result"></div>
                     </div>
                 </div>
             </div>
@@ -203,6 +233,55 @@
         localStorage.removeItem('admin_token');
         showPage('admin-login-page');
         document.getElementById('admin-login-form').reset();
+    }
+
+    // Candidate image handling
+    let candidateImageFile = null;
+
+    function handleCandidateImageUpload() {
+        const input = document.getElementById('candidate-image');
+        const preview = document.getElementById('candidate-image-preview');
+        const fileName = document.getElementById('candidate-file-name');
+        const previewImg = document.getElementById('candidate-preview-img');
+        
+        if (input.files && input.files[0]) {
+            candidateImageFile = input.files[0];
+            
+            // Validate file size (5MB)
+            if (candidateImageFile.size > 5 * 1024 * 1024) {
+                showMessage('error', 'File Too Large', 'Image must be less than 5MB');
+                candidateImageFile = null;
+                input.value = '';
+                preview.style.display = 'none';
+                return;
+            }
+            
+            // Validate file type
+            const validTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif'];
+            if (!validTypes.includes(candidateImageFile.type)) {
+                showMessage('error', 'Invalid File Type', 'Please upload JPG, PNG, or GIF image');
+                candidateImageFile = null;
+                input.value = '';
+                preview.style.display = 'none';
+                return;
+            }
+            
+            // Show preview
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                previewImg.src = e.target.result;
+                fileName.textContent = candidateImageFile.name;
+                preview.style.display = 'block';
+            }
+            reader.readAsDataURL(candidateImageFile);
+        }
+    }
+
+    function removeCandidateImage() {
+        candidateImageFile = null;
+        document.getElementById('candidate-image').value = '';
+        document.getElementById('candidate-image-preview').style.display = 'none';
+        document.getElementById('candidate-preview-img').src = '#';
     }
 
     // Admin login
@@ -361,29 +440,41 @@
             return;
         }
 
-        let html = '<div class="candidates-list">';
+        let html = '<div class="candidates-grid">';
         
         candidates.forEach(candidate => {
             const isActive = candidate.is_active !== false;
             const statusColor = isActive ? '#28a745' : '#dc3545';
             const statusText = isActive ? 'Active' : 'Inactive';
             const votes = candidate.votes || 0;
+            const imageUrl = candidate.image_url || 'https://via.placeholder.com/100?text=No+Image';
+            const candidateId = candidate.candidate_id;
 
             html += `
-                <div class="candidate-card" style="margin-bottom: 15px;">
-                    <div class="candidate-info">
-                        <h4>${candidate.name || 'N/A'}</h4>
-                        <p class="candidate-party">${candidate.party || 'N/A'}</p>
-                        <div style="display: flex; gap: 15px; margin-top: 10px; font-size: 0.9rem;">
-                            <span><i class="fas fa-hashtag"></i> ID: ${candidate.candidate_id || 'N/A'}</span>
-                            <span><i class="fas fa-vote-yea"></i> Votes: ${votes}</span>
-                            <span style="color: ${statusColor};"><i class="fas fa-circle"></i> ${statusText}</span>
+                <div class="candidate-card">
+                    <div class="candidate-header">
+                        <img src="${imageUrl}" alt="${candidate.name}" 
+                             style="width: 80px; height: 80px; border-radius: 50%; object-fit: cover; margin-right: 15px;">
+                        <div class="candidate-basic-info">
+                            <h4>${candidate.name || 'N/A'}</h4>
+                            <p class="candidate-party">${candidate.party || 'N/A'}</p>
+                            <div style="display: flex; gap: 10px; margin-top: 5px; font-size: 0.85rem;">
+                                <span><i class="fas fa-hashtag"></i> ID: ${candidateId || 'N/A'}</span>
+                                <span style="color: ${statusColor};"><i class="fas fa-circle"></i> ${statusText}</span>
+                            </div>
                         </div>
                     </div>
-                    <div class="vote-actions">
-                        <button class="btn btn-danger btn-small" onclick="removeCandidatePrompt(${candidate.candidate_id}, '${candidate.name}')">
-                            <i class="fas fa-trash"></i> Remove
-                        </button>
+                    <div class="candidate-footer">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <span><i class="fas fa-vote-yea"></i> Votes: ${votes}</span>
+                            </div>
+                            <div class="vote-actions">
+                                <button class="btn btn-danger btn-small" onclick="removeCandidatePrompt(${candidateId}, '${candidate.name}')">
+                                    <i class="fas fa-trash"></i> Remove
+                                </button>
+                            </div>
+                        </div>
                     </div>
                 </div>
             `;
@@ -411,11 +502,21 @@
         document.getElementById('loading-text').textContent = 'Adding candidate...';
 
         try {
-            const { data } = await apiCall('/admin/add_candidate', {
+            // Prepare form data to include image
+            const formData = new FormData();
+            formData.append('name', name);
+            formData.append('party', party);
+            
+            if (candidateImageFile) {
+                formData.append('image', candidateImageFile);
+            }
+
+            const response = await fetch('/api/admin/add_candidate', {
                 method: 'POST',
-                body: JSON.stringify({ name, party })
+                body: formData
             });
 
+            const data = await response.json();
             showModal('loading-modal', false);
 
             if (data.success) {
@@ -424,8 +525,11 @@
                         <i class="fas fa-check-circle"></i> ${data.message}
                     </div>
                 `;
+                
+                // Reset form
                 document.getElementById('candidate-name').value = '';
                 document.getElementById('candidate-party').value = '';
+                removeCandidateImage();
                 
                 setTimeout(() => {
                     document.getElementById('candidate-result').innerHTML = '';
