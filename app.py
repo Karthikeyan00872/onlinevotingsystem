@@ -404,7 +404,7 @@ def init_default_admin():
         if admin:
             print("✅ Admin account found in MongoDB")
             return True
-        else:
+        
             print("⚠️ Admin account not found, creating...")
             admin_data = {
                 "username": "admin",
@@ -677,7 +677,7 @@ def admin_login():
             return jsonify({'success': False, 'message': 'Username and password are required'})
         
         # Special case: if trying to login as admin with default password, create if not exists
-        if username == "admin" and password == "admin123":
+        
             admin = get_admin("admin")
             if not admin:
                 print("⚠️ Admin account not found, creating on-demand...")
