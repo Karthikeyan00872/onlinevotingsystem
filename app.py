@@ -1,5 +1,5 @@
 # app.py
-from flask import Flask, render_template, request, jsonify, redirect, url_for, session, send_from_directory
+from flask import Flask, render_template, request, jsonify, redirect, url_for, session, send_from_directory, send_file
 from flask_cors import CORS
 from pymongo import MongoClient
 from bson import ObjectId
@@ -14,93 +14,132 @@ from datetime import datetime, timedelta
 from functools import wraps
 import uuid
 from werkzeug.utils import secure_filename
+import io
 
-# Try to import QR scanning libraries
-try:
-    import cv2
-    import numpy as np
-    from pyzbar.pyzbar import decode
-    QR_SCANNING_AVAILABLE = True
-except ImportError:
-    QR_SCANNING_AVAILABLE = False
-    print("Warning: QR scanning libraries not available. Install with: pip install opencv-python pyzbar")
-
-# Import AadhaarQRDecoder from aadhar1.py concept
-class AadhaarQRDecoder:
-    """Class to decode Aadhaar QR code data"""
+# Aadhaar XML Decoder
+class AadhaarXMLDecoder:
+    """Class to decode Aadhaar XML file data"""
     
-    def __init__(self, qr_data: str):
-        self.qr_data = qr_data.strip()
+    def __init__(self, xml_content: str):
+        self.xml_content = xml_content.strip()
         self.decoded_data = {}
+        self.profile_photo_base64 = None
         
     def decode(self) -> dict:
-        """Decode QR data based on format"""
-        if self._is_xml_format():
-            return self._parse_xml_format()
-        elif self._is_compressed_format():
-            return self._parse_compressed_format()
-        elif self._is_plain_text_format():
-            return self._parse_plain_text_format()
-        else:
-            raise ValueError("Unsupported QR code format")
-    
-    def _is_xml_format(self) -> bool:
-        return (self.qr_data.startswith('<?xml') or 
-                self.qr_data.startswith('<PrintLetterBarcodeData'))
-    
-    def _is_compressed_format(self) -> bool:
-        return self.qr_data.startswith('V')
-    
-    def _is_plain_text_format(self) -> bool:
-        return '|' in self.qr_data and not self.qr_data.startswith('<?xml')
-    
-    def _parse_xml_format(self) -> dict:
+        """Decode XML data and extract information"""
         try:
-            xml_data = self.qr_data
-            if not xml_data.startswith('<?xml'):
-                xml_data = '<?xml version="1.0" encoding="UTF-8"?>' + xml_data
+            # Parse XML
+            root = ET.fromstring(self.xml_content)
             
-            root = ET.fromstring(xml_data)
-            data = {}
-            for attr_name, attr_value in root.attrib.items():
-                data[attr_name.lower()] = attr_value
+            # Find the OfflinePaperlessKyc element
+            kyc_element = root.find('.//OfflinePaperlessKyc')
+            if kyc_element is None:
+                kyc_element = root
             
-            return data
+            # Extract reference ID (may contain Aadhaar info)
+            reference_id = kyc_element.get('referenceId', '')
+            self.decoded_data['reference_id'] = reference_id
+            
+            # Try to extract Aadhaar number from reference ID
+            aadhaar_number = self._extract_aadhaar_from_reference(reference_id)
+            
+            # Extract UidData
+            uid_data = kyc_element.find('UidData')
+            if uid_data is None:
+                raise ValueError("No UidData found in XML")
+            
+            # Extract Poi (Proof of Identity)
+            poi = uid_data.find('Poi')
+            if poi is not None:
+                # The Aadhaar number might be in 'uid' attribute or need to be extracted from signature
+                uid_from_poi = poi.get('uid', '')
+                if uid_from_poi:
+                    aadhaar_number = uid_from_poi
+                
+                self.decoded_data['name'] = poi.get('name', '')
+                self.decoded_data['dob'] = poi.get('dob', '')
+                self.decoded_data['gender'] = poi.get('gender', '')
+                
+                # The 'e' and 'm' attributes might contain encrypted data
+                self.decoded_data['e'] = poi.get('e', '')
+                self.decoded_data['m'] = poi.get('m', '')
+            
+            # Extract Poa (Proof of Address)
+            poa = uid_data.find('Poa')
+            if poa is not None:
+                self.decoded_data['careof'] = poa.get('careof', '')
+                self.decoded_data['house'] = poa.get('house', '')
+                self.decoded_data['street'] = poa.get('street', '')
+                self.decoded_data['landmark'] = poa.get('landmark', '')
+                self.decoded_data['locality'] = poa.get('loc', '') or poa.get('locality', '')
+                self.decoded_data['vtc'] = poa.get('vtc', '')
+                self.decoded_data['subdist'] = poa.get('subdist', '')
+                self.decoded_data['district'] = poa.get('dist', '')
+                self.decoded_data['state'] = poa.get('state', '')
+                self.decoded_data['pincode'] = poa.get('pc', '')
+                self.decoded_data['country'] = poa.get('country', 'India')
+            
+            # Extract Pht (Photo)
+            pht = uid_data.find('Pht')
+            if pht is not None and pht.text:
+                self.profile_photo_base64 = pht.text
+                # Store photo in decoded_data as well
+                self.decoded_data['photo_base64'] = pht.text
+            
+            # Store the extracted Aadhaar number
+            self.decoded_data['aadhaar_number'] = aadhaar_number
+            
+            return self.decoded_data
+            
         except ET.ParseError as e:
             raise ValueError(f"Failed to parse XML: {e}")
-    
-    def _parse_compressed_format(self) -> dict:
-        try:
-            compressed_data = base64.b64decode(self.qr_data[1:])
-            xml_data = zlib.decompress(compressed_data, 15 + 32).decode('utf-8')
-            self.qr_data = xml_data
-            return self._parse_xml_format()
         except Exception as e:
-            raise ValueError(f"Failed to decode compressed data: {e}")
+            raise ValueError(f"Error processing Aadhaar XML: {e}")
     
-    def _parse_plain_text_format(self) -> dict:
-        try:
-            parts = self.qr_data.split('|')
-            data = {
-                'uid': parts[0] if len(parts) > 0 else '',
-                'name': parts[1] if len(parts) > 1 else '',
-                'dob': parts[2] if len(parts) > 2 else '',
-                'gender': parts[3] if len(parts) > 3 else '',
-                'co': parts[4] if len(parts) > 4 else '',
-                'house': parts[5] if len(parts) > 5 else '',
-                'street': parts[6] if len(parts) > 6 else '',
-                'landmark': parts[7] if len(parts) > 7 else '',
-                'locality': parts[8] if len(parts) > 8 else '',
-                'vtc': parts[9] if len(parts) > 9 else '',
-                'dist': parts[10] if len(parts) > 10 else '',
-                'state': parts[11] if len(parts) > 11 else '',
-                'pc': parts[12] if len(parts) > 12 else '',
-                'email': parts[13] if len(parts) > 13 else '',
-                'mobile': parts[14] if len(parts) > 14 else '',
-            }
-            return {k: v for k, v in data.items() if v}
-        except Exception as e:
-            raise ValueError(f"Failed to parse plain text format: {e}")
+    def _extract_aadhaar_from_reference(self, reference_id: str) -> str:
+        """Extract Aadhaar number from reference ID"""
+        if not reference_id:
+            return ""
+        
+        # Reference ID format might contain Aadhaar number
+        # Try different patterns to extract Aadhaar
+        patterns = [
+            r'\d{12}',  # 12 digit Aadhaar
+            r'\d{16}',  # 16 digit reference
+            r'\d+',     # Any digits
+        ]
+        
+        for pattern in patterns:
+            matches = re.findall(pattern, reference_id)
+            if matches:
+                # Take the longest match
+                longest_match = max(matches, key=len)
+                if len(longest_match) >= 12:  # At least 12 digits for Aadhaar
+                    return longest_match
+        
+        return ""
+    
+    def get_profile_photo(self):
+        """Get profile photo as base64 string"""
+        return self.profile_photo_base64
+    
+    def save_profile_photo(self, file_path):
+        """Save profile photo to file"""
+        if self.profile_photo_base64:
+            try:
+                # Remove data URL prefix if present
+                photo_data = self.profile_photo_base64
+                if 'base64,' in photo_data:
+                    photo_data = photo_data.split('base64,')[1]
+                
+                # Decode base64 and save
+                with open(file_path, 'wb') as f:
+                    f.write(base64.b64decode(photo_data))
+                return True
+            except Exception as e:
+                print(f"Error saving profile photo: {e}")
+                return False
+        return False
 
 # Initialize Flask app
 app = Flask(__name__, static_folder='.', static_url_path='')
@@ -108,13 +147,20 @@ app.secret_key = 'your-secret-key-here-change-in-production'
 CORS(app)
 
 # Configuration for file uploads
-app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024  # 5MB max file size
-app.config['UPLOAD_FOLDER'] = 'static/candidate_images'
-app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg', 'gif'}
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
+app.config['UPLOAD_FOLDER'] = 'static/uploads'
+app.config['PROFILE_PHOTOS_FOLDER'] = 'static/profile_photos'
+app.config['ALLOWED_EXTENSIONS'] = {'xml', 'XML'}
+app.config['ALLOWED_PHOTO_EXTENSIONS'] = {'png', 'jpg', 'jpeg', 'gif'}
 
-def allowed_file(filename):
-    return '.' in filename and \
-           filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
+def allowed_file(filename, file_type='xml'):
+    """Check if file extension is allowed"""
+    if file_type == 'xml':
+        return '.' in filename and \
+               filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
+    else:  # photo
+        return '.' in filename and \
+               filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_PHOTO_EXTENSIONS']
 
 # MongoDB connection
 try:
@@ -185,39 +231,12 @@ if not mongodb_connected:
     users_db = _load_json(USERS_FILE, default_users)
     admins_db = _load_json(ADMINS_FILE, {})
 
-    # Ensure test voter exists
-    if not users_db.get('testvoter'):
-        users_db['testvoter'] = {
-            'password': 'test123',
-            'role': 'voter',
-            'full_name': 'Test Voter',
-            'aadhaar_number': '123456789012',
-            'is_verified': True,
-            'has_voted': False
-        }
-
     # Load candidates (keys stored as strings in JSON, convert to int)
     raw_candidates = _load_json(CANDIDATES_FILE, {})
     try:
         candidates_db = {int(k): v for k, v in raw_candidates.items()} if isinstance(raw_candidates, dict) else {}
     except Exception:
         candidates_db = {}
-
-    if len(candidates_db) == 0:
-        candidates_db[1] = {
-            'candidate_id': 1,
-            'name': 'John Doe',
-            'party': 'Democratic Party',
-            'is_active': True,
-            'votes': 0
-        }
-        candidates_db[2] = {
-            'candidate_id': 2,
-            'name': 'Jane Smith',
-            'party': 'Republican Party',
-            'is_active': True,
-            'votes': 0
-        }
 
     votes_db = _load_json(VOTES_FILE, [])
 
@@ -248,6 +267,14 @@ def get_user(username):
         return users_collection.find_one({"username": username})
     elif not mongodb_connected:
         return users_db.get(username)
+    return None
+
+def get_user_by_aadhaar(aadhaar_number):
+    """Get user by Aadhaar number"""
+    if mongodb_connected and users_collection is not None:
+        return users_collection.find_one({"aadhaar_number": aadhaar_number, "role": "voter"})
+    elif not mongodb_connected:
+        return next((u for u in users_db.values() if u.get('aadhaar_number') == aadhaar_number and u.get('role') == 'voter'), None)
     return None
 
 def get_admin(username):
@@ -404,6 +431,33 @@ def get_total_candidates():
         return sum(1 for c in candidates_db.values() if c.get('is_active', True))
     return 0
 
+def save_profile_photo_from_xml(xml_content, username):
+    """Extract and save profile photo from XML"""
+    try:
+        decoder = AadhaarXMLDecoder(xml_content)
+        decoded_data = decoder.decode()
+        
+        photo_base64 = decoder.get_profile_photo()
+        if not photo_base64:
+            return None
+        
+        # Create profile photos directory if it doesn't exist
+        if not os.path.exists(app.config['PROFILE_PHOTOS_FOLDER']):
+            os.makedirs(app.config['PROFILE_PHOTOS_FOLDER'])
+        
+        # Generate filename
+        filename = f"{username}_profile.jpg"
+        filepath = os.path.join(app.config['PROFILE_PHOTOS_FOLDER'], filename)
+        
+        # Save photo
+        if decoder.save_profile_photo(filepath):
+            return f"/static/profile_photos/{filename}"
+        
+        return None
+    except Exception as e:
+        print(f"Error saving profile photo: {e}")
+        return None
+
 # Initialize default admin if not exists
 def init_default_admin():
     """Initialize default admin account"""
@@ -494,41 +548,6 @@ def requires_auth(f):
         return f(*args, **kwargs)
     return decorated
 
-def scan_qr_from_image_file(file_path):
-    """Scan QR code from an image file"""
-    if not QR_SCANNING_AVAILABLE:
-        return None
-    
-    try:
-        img = cv2.imread(file_path)
-        if img is None:
-            return None
-        
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        decoded_objects = decode(gray)
-        
-        if not decoded_objects:
-            # Try with different preprocessing
-            _, thresh = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
-            decoded_objects = decode(thresh)
-            
-            if not decoded_objects:
-                adaptive_thresh = cv2.adaptiveThreshold(gray, 255, 
-                                                       cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                                       cv2.THRESH_BINARY, 11, 2)
-                decoded_objects = decode(adaptive_thresh)
-        
-        for obj in decoded_objects:
-            if obj.type == 'QRCODE':
-                qr_data = obj.data.decode('utf-8')
-                return qr_data
-        
-        return None
-        
-    except Exception as e:
-        print(f"Error scanning QR code: {e}")
-        return None
-
 # Routes
 @app.route('/')
 def index():
@@ -545,9 +564,14 @@ def voting_page():
     """Serve the voting page"""
     return app.send_static_file('voting.html')
 
-@app.route('/static/candidate_images/<filename>')
-def serve_candidate_image(filename):
-    """Serve candidate images"""
+@app.route('/static/profile_photos/<filename>')
+def serve_profile_photo(filename):
+    """Serve profile photos"""
+    return send_from_directory(app.config['PROFILE_PHOTOS_FOLDER'], filename)
+
+@app.route('/static/uploads/<filename>')
+def serve_upload(filename):
+    """Serve uploaded files"""
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
 @app.route('/api/test', methods=['GET'])
@@ -557,92 +581,161 @@ def test_api():
         'success': True,
         'message': 'Server is running',
         'mongodb': mongodb_connected,
-        'qr_scanning': 'Available' if QR_SCANNING_AVAILABLE else 'Unavailable',
         'admin_account': 'Created' if get_admin("admin") else 'Not Found'
     })
 
 @app.route('/api/register', methods=['POST'])
 def register():
-    """Register a new voter"""
+    """Register a new voter with Aadhaar XML file"""
     try:
-        data = request.get_json()
-        username = data.get('username', '').strip()
-        password = data.get('password', '').strip()
-        fullName = data.get('fullName', '').strip()
-        qr_data = data.get('qr_data', '').strip()
+        # Check if XML file is uploaded
+        if 'aadhaar_xml' not in request.files:
+            return jsonify({'success': False, 'message': 'No Aadhaar XML file uploaded'})
         
+        xml_file = request.files['aadhaar_xml']
+        
+        if xml_file.filename == '':
+            return jsonify({'success': False, 'message': 'No XML file selected'})
+        
+        if not allowed_file(xml_file.filename, 'xml'):
+            return jsonify({'success': False, 'message': 'Invalid file type. Only XML files are allowed'})
+        
+        # Read XML content
+        xml_content = xml_file.read().decode('utf-8')
+        
+        # Parse form data
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '').strip()
+        confirm_password = request.form.get('confirm_password', '').strip()
+        full_name = request.form.get('full_name', '').strip()
+        
+        # Validate inputs
         if not username or not password:
             return jsonify({'success': False, 'message': 'Username and password are required'})
+        
+        if len(username) < 3:
+            return jsonify({'success': False, 'message': 'Username must be at least 3 characters'})
+        
+        if len(password) < 6:
+            return jsonify({'success': False, 'message': 'Password must be at least 6 characters'})
+        
+        if password != confirm_password:
+            return jsonify({'success': False, 'message': 'Passwords do not match'})
         
         # Check if username already exists
         existing_user = get_user(username)
         if existing_user:
             return jsonify({'success': False, 'message': 'Username already exists'})
         
-        if len(password) < 6:
-            return jsonify({'success': False, 'message': 'Password must be at least 6 characters'})
-        
-        # Decode Aadhaar QR data
-        aadhaar_number = None
-        decoded_data = None
-        if qr_data:
-            try:
-                decoder = AadhaarQRDecoder(qr_data)
-                decoded_data = decoder.decode()
-                aadhaar_number = decoded_data.get('uid', '')
+        # Decode Aadhaar XML
+        try:
+            decoder = AadhaarXMLDecoder(xml_content)
+            decoded_data = decoder.decode()
+            
+            # Extract Aadhaar number
+            aadhaar_number = decoded_data.get('aadhaar_number', '')
+            
+            if not aadhaar_number or len(aadhaar_number) < 12:
+                return jsonify({'success': False, 'message': 'Could not extract valid Aadhaar number from XML. Please make sure you uploaded the correct Aadhaar XML file.'})
+            
+            # Check if Aadhaar is already registered
+            existing_user_with_aadhaar = get_user_by_aadhaar(aadhaar_number)
+            if existing_user_with_aadhaar:
+                return jsonify({
+                    'success': False,
+                    'message': 'Aadhaar number already registered',
+                    'is_duplicate': True,
+                    'existing_user': existing_user_with_aadhaar.get('username')
+                })
+            
+            # Save profile photo from XML
+            profile_photo_url = save_profile_photo_from_xml(xml_content, username)
+            
+            # Create user document
+            user_data = {
+                "username": username,
+                "password": password,
+                "role": "voter",
+                "full_name": full_name or decoded_data.get('name', username),
+                "aadhaar_number": aadhaar_number,
+                "is_verified": True,
+                "has_voted": False,
+                "aadhaar_data": decoded_data,
+                "profile_photo_url": profile_photo_url,
+                "created_at": datetime.now()
+            }
+            
+            # Save to MongoDB or in-memory
+            user_id = create_user(user_data)
+            
+            if user_id:
+                return jsonify({
+                    'success': True,
+                    'message': 'Registration successful',
+                    'user': {
+                        'username': username,
+                        'full_name': full_name or decoded_data.get('name', username),
+                        'aadhaar_number': aadhaar_number,
+                        'is_verified': True,
+                        'profile_photo_url': profile_photo_url
+                    }
+                })
+            else:
+                return jsonify({'success': False, 'message': 'Failed to create user account'})
                 
-                # Check if Aadhaar is already registered
-                if aadhaar_number:
-                    # Check MongoDB
-                    if mongodb_connected and users_collection is not None:
-                        duplicate_user = users_collection.find_one({"aadhaar_number": aadhaar_number, "role": "voter"})
-                    # Check in-memory
-                    elif not mongodb_connected:
-                        duplicate_user = next((u for u in users_db.values() if u.get('aadhaar_number') == aadhaar_number and u.get('role') == 'voter'), None)
-                    else:
-                        duplicate_user = None
-                    
-                    if duplicate_user:
-                        return jsonify({
-                            'success': False,
-                            'message': 'Aadhaar number already registered',
-                            'is_duplicate': True
-                        })
-            except Exception as e:
-                return jsonify({'success': False, 'message': f'Invalid QR data: {str(e)}'})
-        
-        # Create user document
-        user_data = {
-            "username": username,
-            "password": password,  # In production, hash this
-            "role": "voter",
-            "full_name": fullName or username,
-            "aadhaar_number": aadhaar_number,
-            "is_verified": bool(aadhaar_number),
-            "has_voted": False,
-            "qr_data": decoded_data if qr_data else None,
-            "created_at": datetime.now()
-        }
-        
-        # Save to MongoDB or in-memory
-        user_id = create_user(user_data)
-        
-        if user_id:
-            return jsonify({
-                'success': True,
-                'message': 'Registration successful',
-                'user': {
-                    'username': username,
-                    'full_name': fullName or username,
-                    'aadhaar_number': aadhaar_number,
-                    'is_verified': bool(aadhaar_number)
-                }
-            })
-        else:
-            return jsonify({'success': False, 'message': 'Failed to create user account'})
+        except Exception as e:
+            return jsonify({'success': False, 'message': f'Invalid Aadhaar XML: {str(e)}'})
         
     except Exception as e:
         return jsonify({'success': False, 'message': f'Registration failed: {str(e)}'})
+
+@app.route('/api/validate_aadhaar_xml', methods=['POST'])
+def validate_aadhaar_xml():
+    """Validate Aadhaar XML file"""
+    try:
+        if 'xml_file' not in request.files:
+            return jsonify({'success': False, 'message': 'No XML file uploaded'})
+        
+        xml_file = request.files['xml_file']
+        
+        if xml_file.filename == '':
+            return jsonify({'success': False, 'message': 'No XML file selected'})
+        
+        if not allowed_file(xml_file.filename, 'xml'):
+            return jsonify({'success': False, 'message': 'Invalid file type. Only XML files are allowed'})
+        
+        # Read XML content
+        xml_content = xml_file.read().decode('utf-8')
+        
+        # Decode Aadhaar XML
+        decoder = AadhaarXMLDecoder(xml_content)
+        decoded_data = decoder.decode()
+        
+        aadhaar_number = decoded_data.get('aadhaar_number', '')
+        
+        if not aadhaar_number or len(aadhaar_number) < 12:
+            return jsonify({'success': False, 'message': 'Could not extract valid Aadhaar number from XML. Please make sure you uploaded the correct Aadhaar XML file.'})
+        
+        # Check if Aadhaar is already registered
+        existing_user = get_user_by_aadhaar(aadhaar_number)
+        is_duplicate = existing_user is not None
+        
+        # Get profile photo if available
+        profile_photo_base64 = decoder.get_profile_photo()
+        profile_photo_url = None
+        
+        return jsonify({
+            'success': True,
+            'message': 'Aadhaar XML validated successfully',
+            'aadhaar_number': aadhaar_number,
+            'is_duplicate': is_duplicate,
+            'existing_user': existing_user.get('username') if existing_user else None,
+            'data': decoded_data,
+            'has_photo': bool(profile_photo_base64)
+        })
+        
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'Aadhaar XML validation failed: {str(e)}'})
 
 @app.route('/api/login', methods=['POST'])
 def login():
@@ -659,7 +752,7 @@ def login():
         if not user or user.get('role') != 'voter':
             return jsonify({'success': False, 'message': 'Invalid username or password'})
         
-        if user.get('password') != password:  # In production, use proper password hashing
+        if user.get('password') != password:
             return jsonify({'success': False, 'message': 'Invalid username or password'})
         
         return jsonify({
@@ -671,7 +764,8 @@ def login():
                 'aadhaar_number': user.get('aadhaar_number', ''),
                 'is_verified': user.get('is_verified', False),
                 'has_voted': user.get('has_voted', False),
-                'qr_data': user.get('qr_data')
+                'profile_photo_url': user.get('profile_photo_url'),
+                'aadhaar_data': user.get('aadhaar_data', {})
             }
         })
         
@@ -748,91 +842,6 @@ def admin_login():
         print(f"❌ Admin login error: {str(e)}")
         return jsonify({'success': False, 'message': f'Admin login failed: {str(e)}'})
 
-@app.route('/api/validate_aadhaar', methods=['POST'])
-def validate_aadhaar():
-    """Validate Aadhaar QR data"""
-    try:
-        data = request.get_json()
-        qr_data = data.get('qr_data', '').strip()
-        
-        if not qr_data:
-            return jsonify({'success': False, 'message': 'QR data is required'})
-        
-        # Decode Aadhaar QR
-        decoder = AadhaarQRDecoder(qr_data)
-        decoded_data = decoder.decode()
-        
-        aadhaar_number = decoded_data.get('uid', '')
-        
-        if not aadhaar_number:
-            return jsonify({'success': False, 'message': 'Invalid Aadhaar QR code'})
-        
-        # Check if Aadhaar is already registered
-        is_duplicate = False
-        existing_user = None
-        
-        if mongodb_connected and users_collection is not None:
-            duplicate_user = users_collection.find_one({"aadhaar_number": aadhaar_number, "role": "voter"})
-            if duplicate_user:
-                is_duplicate = True
-                existing_user = duplicate_user.get('username')
-        elif not mongodb_connected:
-            duplicate_user = next((u for u in users_db.values() if u.get('aadhaar_number') == aadhaar_number and u.get('role') == 'voter'), None)
-            if duplicate_user:
-                is_duplicate = True
-                existing_user = duplicate_user.get('username')
-        
-        return jsonify({
-            'success': True,
-            'message': 'Aadhaar validated successfully',
-            'aadhaar_number': aadhaar_number,
-            'is_duplicate': is_duplicate,
-            'existing_user': existing_user,
-            'data': decoded_data
-        })
-        
-    except Exception as e:
-        return jsonify({'success': False, 'message': f'Aadhaar validation failed: {str(e)}'})
-
-@app.route('/api/scan_uploaded_image', methods=['POST'])
-def scan_uploaded_image():
-    """Scan QR code from uploaded image"""
-    if not QR_SCANNING_AVAILABLE:
-        return jsonify({
-            'success': False,
-            'message': 'QR scanning not available. Install opencv-python and pyzbar.'
-        })
-    
-    try:
-        if 'file' not in request.files:
-            return jsonify({'success': False, 'message': 'No file uploaded'})
-        
-        file = request.files['file']
-        if file.filename == '':
-            return jsonify({'success': False, 'message': 'No file selected'})
-        
-        # Save uploaded file temporarily
-        temp_path = f"temp_{datetime.now().timestamp()}.jpg"
-        file.save(temp_path)
-        
-        # Scan QR from image
-        qr_data = scan_qr_from_image_file(temp_path)
-        
-        # Clean up temp file
-        os.remove(temp_path)
-        
-        if qr_data:
-            return jsonify({
-                'success': True,
-                'message': 'QR code scanned successfully',
-                'qr_data': qr_data
-            })
-        else:
-            return jsonify({'success': False, 'message': 'No QR code found in image'})
-        
-    except Exception as e:
-        return jsonify({'success': False, 'message': f'Error processing image: {str(e)}'})
-
 @app.route('/api/get_user_info', methods=['POST'])
 def get_user_info():
     """Get user information"""
@@ -865,7 +874,8 @@ def get_user_info():
                 'aadhaar_number': user.get('aadhaar_number', ''),
                 'is_verified': user.get('is_verified', False),
                 'has_voted': user.get('has_voted', False),
-                'qr_data': user.get('qr_data')
+                'profile_photo_url': user.get('profile_photo_url'),
+                'aadhaar_data': user.get('aadhaar_data', {})
             },
             'candidates': active_candidates
         })
@@ -1016,7 +1026,7 @@ def admin_add_candidate():
         image_url = None
         if 'image' in request.files:
             file = request.files['image']
-            if file and file.filename and allowed_file(file.filename):
+            if file and file.filename and allowed_file(file.filename, 'photo'):
                 # Create upload folder if it doesn't exist
                 if not os.path.exists(app.config['UPLOAD_FOLDER']):
                     os.makedirs(app.config['UPLOAD_FOLDER'])
@@ -1025,7 +1035,7 @@ def admin_add_candidate():
                 filename = secure_filename(f"candidate_{new_id}_{file.filename}")
                 file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
                 file.save(file_path)
-                image_url = f'/static/candidate_images/{filename}'
+                image_url = f'/static/uploads/{filename}'
         
         candidate_data = {
             'candidate_id': new_id,
@@ -1090,6 +1100,64 @@ def admin_remove_candidate():
         print(f"Error removing candidate: {e}")
         return jsonify({'success': False, 'message': f'Failed to remove candidate: {str(e)}'})
 
+# Alternative registration method for testing
+@app.route('/api/register_without_aadhaar', methods=['POST'])
+def register_without_aadhaar():
+    """Alternative registration for testing without Aadhaar XML"""
+    try:
+        data = request.get_json()
+        username = data.get('username', '').strip()
+        password = data.get('password', '').strip()
+        full_name = data.get('full_name', '').strip()
+        
+        if not username or not password:
+            return jsonify({'success': False, 'message': 'Username and password are required'})
+        
+        if len(username) < 3:
+            return jsonify({'success': False, 'message': 'Username must be at least 3 characters'})
+        
+        if len(password) < 6:
+            return jsonify({'success': False, 'message': 'Password must be at least 6 characters'})
+        
+        # Check if username already exists
+        existing_user = get_user(username)
+        if existing_user:
+            return jsonify({'success': False, 'message': 'Username already exists'})
+        
+        # Create user document without Aadhaar verification
+        user_data = {
+            "username": username,
+            "password": password,
+            "role": "voter",
+            "full_name": full_name or username,
+            "aadhaar_number": f"TEST_{username}",  # Test Aadhaar number
+            "is_verified": False,  # Not verified since no Aadhaar XML
+            "has_voted": False,
+            "aadhaar_data": {},
+            "profile_photo_url": None,
+            "created_at": datetime.now()
+        }
+        
+        # Save to MongoDB or in-memory
+        user_id = create_user(user_data)
+        
+        if user_id:
+            return jsonify({
+                'success': True,
+                'message': 'Registration successful (TEST MODE - No Aadhaar verification)',
+                'user': {
+                    'username': username,
+                    'full_name': full_name or username,
+                    'aadhaar_number': f"TEST_{username}",
+                    'is_verified': False
+                }
+            })
+        else:
+            return jsonify({'success': False, 'message': 'Failed to create user account'})
+        
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'Registration failed: {str(e)}'})
+
 # Error handlers
 @app.errorhandler(404)
 def not_found(error):
@@ -1102,10 +1170,9 @@ def server_error(error):
 # Main entry point
 if __name__ == '__main__':
     print("="*60)
-    print("ONLINE VOTING SYSTEM")
+    print("ONLINE VOTING SYSTEM WITH AADHAAR XML INTEGRATION")
     print("="*60)
     print(f"📊 MongoDB: {'✅ Connected' if mongodb_connected else '❌ Not Connected'}")
-    print(f"📷 QR Scanning: {'✅ Available' if QR_SCANNING_AVAILABLE else '❌ Unavailable'}")
     
     # Initialize admin but do NOT clear existing data by default (preserve persisted data)
     admin_created = init_default_admin()
@@ -1121,9 +1188,10 @@ if __name__ == '__main__':
         print("   ❌ Admin account could not be created")
     
     print("\n📝 IMPORTANT:")
-    print("   - All default candidates and test data have been removed")
-    print("   - You can add new candidates from the admin panel")
-    print("   - No default test voter exists (register new voters)")
+    print("   - Registration requires Aadhaar XML file upload")
+    print("   - Download your Aadhaar XML from: https://tathya.uidai.gov.in/access/login?role=resident")
+    print("   - Profile photos are automatically extracted from XML")
+    print("   - For testing without Aadhaar, use the alternative registration endpoint")
     
     print("\n🌐 Server URL: http://127.0.0.1:5000")
     print("   Admin Panel: http://127.0.0.1:5000/admin")
@@ -1133,9 +1201,10 @@ if __name__ == '__main__':
     if not os.path.exists('temp'):
         os.makedirs('temp')
     
-    # Create candidate images directory
-    if not os.path.exists(app.config['UPLOAD_FOLDER']):
-        os.makedirs(app.config['UPLOAD_FOLDER'])
+    # Create upload directories
+    for folder in [app.config['UPLOAD_FOLDER'], app.config['PROFILE_PHOTOS_FOLDER']]:
+        if not os.path.exists(folder):
+            os.makedirs(folder)
     
     # Run the Flask app
     app.run(host='127.0.0.1', port=5000, debug=True, use_reloader=False)
