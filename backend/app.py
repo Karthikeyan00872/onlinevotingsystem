@@ -15,6 +15,18 @@ from functools import wraps
 import uuid
 from werkzeug.utils import secure_filename
 import io
+import logging
+import sys
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
 
 # Aadhaar XML Decoder
 class AadhaarXMLDecoder:
@@ -130,7 +142,7 @@ app = Flask(__name__,
             template_folder='../frontend')
 
 # Get secret key from environment variable
-app.secret_key = os.environ.get('SECRET_KEY', 'your-secret-key-here-change-in-production')
+app.secret_key = os.environ.get('SECRET_KEY', os.urandom(24).hex())
 CORS(app)
 
 # Configuration for file uploads
@@ -147,6 +159,13 @@ def allowed_file(filename, file_type='xml'):
         return '.' in filename and \
                filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_IMAGE_EXTENSIONS']
 
+def safe_object_id(id_string):
+    """Safely convert string to ObjectId"""
+    try:
+        return ObjectId(id_string)
+    except:
+        return None
+
 # MongoDB connection
 def get_mongodb_connection():
     """Get MongoDB connection from environment variables"""
@@ -155,35 +174,42 @@ def get_mongodb_connection():
         mongodb_uri = os.environ.get('MONGODB_URI')
         
         if not mongodb_uri:
-            # Fallback for local development
-            mongodb_uri = 'mongodb://localhost:27017/'
-            print("⚠️ MONGODB_URI not set, using local MongoDB")
+            logger.warning("⚠️ MONGODB_URI not set!")
+            return {
+                'connected': False,
+                'users': None,
+                'admins': None,
+                'candidates': None,
+                'votes': None,
+                'images': None
+            }
         
-        # Connect to MongoDB
-        client = MongoClient(mongodb_uri, serverSelectionTimeoutMS=5000)
-        db = client['online_voting']  # You can change this database name
+        # Add connection options for better reliability
+        client = MongoClient(
+            mongodb_uri, 
+            serverSelectionTimeoutMS=5000,
+            connectTimeoutMS=30000,
+            socketTimeoutMS=30000,
+            maxPoolSize=50,
+            retryWrites=True
+        )
         
         # Test the connection
         client.server_info()
         
-        # Collections
-        users_collection = db['users']
-        admins_collection = db['admins']
-        candidates_collection = db['candidates']
-        votes_collection = db['votes']
-        images_collection = db['images']
+        db = client['online_voting']
         
-        print("✅ Successfully connected to MongoDB")
+        logger.info("✅ Successfully connected to MongoDB")
         return {
             'connected': True,
-            'users': users_collection,
-            'admins': admins_collection,
-            'candidates': candidates_collection,
-            'votes': votes_collection,
-            'images': images_collection
+            'users': db['users'],
+            'admins': db['admins'],
+            'candidates': db['candidates'],
+            'votes': db['votes'],
+            'images': db['images']
         }
     except Exception as e:
-        print(f"❌ Error connecting to MongoDB: {e}")
+        logger.error(f"❌ Error connecting to MongoDB: {e}")
         return {
             'connected': False,
             'users': None,
@@ -226,7 +252,7 @@ def store_image_in_mongodb(image_data, image_type='profile'):
         result = images_collection.insert_one(image_doc)
         return str(result.inserted_id)
     except Exception as e:
-        print(f"Error storing image in MongoDB: {e}")
+        logger.error(f"Error storing image in MongoDB: {e}")
         return None
 
 def get_image_from_mongodb(image_id):
@@ -235,142 +261,214 @@ def get_image_from_mongodb(image_id):
         return None
     
     try:
-        image_doc = images_collection.find_one({'_id': ObjectId(image_id)})
+        obj_id = safe_object_id(image_id)
+        if not obj_id:
+            return None
+            
+        image_doc = images_collection.find_one({'_id': obj_id})
         if image_doc:
             return image_doc.get('data')
         return None
     except Exception as e:
-        print(f"Error retrieving image from MongoDB: {e}")
+        logger.error(f"Error retrieving image from MongoDB: {e}")
         return None
 
 # Helper functions for MongoDB/fallback
 def get_user(username):
     """Get user from MongoDB"""
-    if mongodb_connected and users_collection is not None:
-        return users_collection.find_one({"username": username})
-    return None
+    try:
+        if mongodb_connected and users_collection is not None:
+            return users_collection.find_one({"username": username})
+        return None
+    except Exception as e:
+        logger.error(f"Error getting user: {e}")
+        return None
 
 def get_user_by_aadhaar(aadhaar_number):
     """Get user by Aadhaar number"""
-    if mongodb_connected and users_collection is not None:
-        return users_collection.find_one({"aadhaar_number": aadhaar_number, "role": "voter"})
-    return None
+    try:
+        if mongodb_connected and users_collection is not None:
+            return users_collection.find_one({"aadhaar_number": aadhaar_number, "role": "voter"})
+        return None
+    except Exception as e:
+        logger.error(f"Error getting user by aadhaar: {e}")
+        return None
 
 def get_admin(username):
     """Get admin from MongoDB"""
-    if mongodb_connected and admins_collection is not None:
-        return admins_collection.find_one({"username": username})
-    return None
+    try:
+        if mongodb_connected and admins_collection is not None:
+            return admins_collection.find_one({"username": username})
+        return None
+    except Exception as e:
+        logger.error(f"Error getting admin: {e}")
+        return None
 
 def get_candidate(candidate_id):
     """Get candidate from MongoDB"""
-    candidate_id = int(candidate_id) if isinstance(candidate_id, (str, float)) else candidate_id
-    if mongodb_connected and candidates_collection is not None:
-        return candidates_collection.find_one({"candidate_id": candidate_id})
-    return None
+    try:
+        candidate_id = int(candidate_id) if isinstance(candidate_id, (str, float)) else candidate_id
+        if mongodb_connected and candidates_collection is not None:
+            return candidates_collection.find_one({"candidate_id": candidate_id})
+        return None
+    except Exception as e:
+        logger.error(f"Error getting candidate: {e}")
+        return None
 
 def get_all_candidates():
     """Get all candidates from MongoDB"""
-    if mongodb_connected and candidates_collection is not None:
-        return list(candidates_collection.find({}))
-    return []
+    try:
+        if mongodb_connected and candidates_collection is not None:
+            return list(candidates_collection.find({}))
+        return []
+    except Exception as e:
+        logger.error(f"Error getting all candidates: {e}")
+        return []
 
 def get_all_votes():
     """Get all votes from MongoDB"""
-    if mongodb_connected and votes_collection is not None:
-        return list(votes_collection.find({}))
-    return []
+    try:
+        if mongodb_connected and votes_collection is not None:
+            return list(votes_collection.find({}))
+        return []
+    except Exception as e:
+        logger.error(f"Error getting all votes: {e}")
+        return []
 
 def create_user(user_data):
     """Create new user in MongoDB"""
-    if mongodb_connected and users_collection is not None:
-        result = users_collection.insert_one(user_data)
-        return result.inserted_id
-    return None
+    try:
+        if mongodb_connected and users_collection is not None:
+            result = users_collection.insert_one(user_data)
+            return result.inserted_id
+        return None
+    except Exception as e:
+        logger.error(f"Error creating user: {e}")
+        return None
 
 def create_admin(admin_data):
     """Create new admin in MongoDB"""
-    if mongodb_connected and admins_collection is not None:
-        result = admins_collection.insert_one(admin_data)
-        return result.inserted_id
-    return None
+    try:
+        if mongodb_connected and admins_collection is not None:
+            result = admins_collection.insert_one(admin_data)
+            return result.inserted_id
+        return None
+    except Exception as e:
+        logger.error(f"Error creating admin: {e}")
+        return None
 
 def create_candidate(candidate_data):
     """Create new candidate in MongoDB"""
-    if mongodb_connected and candidates_collection is not None:
-        result = candidates_collection.insert_one(candidate_data)
-        return result.inserted_id
-    return None
+    try:
+        if mongodb_connected and candidates_collection is not None:
+            result = candidates_collection.insert_one(candidate_data)
+            return result.inserted_id
+        return None
+    except Exception as e:
+        logger.error(f"Error creating candidate: {e}")
+        return None
 
 def create_vote(vote_data):
     """Create new vote in MongoDB"""
-    if mongodb_connected and votes_collection is not None:
-        result = votes_collection.insert_one(vote_data)
-        return result.inserted_id
-    return None
+    try:
+        if mongodb_connected and votes_collection is not None:
+            result = votes_collection.insert_one(vote_data)
+            return result.inserted_id
+        return None
+    except Exception as e:
+        logger.error(f"Error creating vote: {e}")
+        return None
 
 def update_user(username, update_data):
     """Update user in MongoDB"""
-    if mongodb_connected and users_collection is not None:
-        users_collection.update_one({"username": username}, {"$set": update_data})
+    try:
+        if mongodb_connected and users_collection is not None:
+            users_collection.update_one({"username": username}, {"$set": update_data})
+            return True
+        return False
+    except Exception as e:
+        logger.error(f"Error updating user: {e}")
+        return False
 
 def update_candidate(candidate_id, update_data):
     """Update candidate in MongoDB"""
-    candidate_id = int(candidate_id) if isinstance(candidate_id, (str, float)) else candidate_id
-    if mongodb_connected and candidates_collection is not None:
-        candidates_collection.update_one({"candidate_id": candidate_id}, {"$set": update_data})
+    try:
+        candidate_id = int(candidate_id) if isinstance(candidate_id, (str, float)) else candidate_id
+        if mongodb_connected and candidates_collection is not None:
+            candidates_collection.update_one({"candidate_id": candidate_id}, {"$set": update_data})
+            return True
+        return False
+    except Exception as e:
+        logger.error(f"Error updating candidate: {e}")
+        return False
 
 def delete_candidate(candidate_id):
     """Delete candidate from MongoDB"""
-    candidate_id = int(candidate_id) if isinstance(candidate_id, (str, float)) else candidate_id
-    if mongodb_connected and candidates_collection is not None:
-        result = candidates_collection.delete_one({"candidate_id": candidate_id})
-        return result.deleted_count > 0
-    return False
+    try:
+        candidate_id = int(candidate_id) if isinstance(candidate_id, (str, float)) else candidate_id
+        if mongodb_connected and candidates_collection is not None:
+            result = candidates_collection.delete_one({"candidate_id": candidate_id})
+            return result.deleted_count > 0
+        return False
+    except Exception as e:
+        logger.error(f"Error deleting candidate: {e}")
+        return False
 
 def get_total_voters():
     """Get total number of voters"""
-    if mongodb_connected and users_collection is not None:
-        return users_collection.count_documents({"role": "voter"})
-    return 0
+    try:
+        if mongodb_connected and users_collection is not None:
+            return users_collection.count_documents({"role": "voter"})
+        return 0
+    except Exception as e:
+        logger.error(f"Error getting total voters: {e}")
+        return 0
 
 def get_total_votes():
     """Get total number of votes"""
-    if mongodb_connected and votes_collection is not None:
-        return votes_collection.count_documents({})
-    return 0
+    try:
+        if mongodb_connected and votes_collection is not None:
+            return votes_collection.count_documents({})
+        return 0
+    except Exception as e:
+        logger.error(f"Error getting total votes: {e}")
+        return 0
 
 def get_total_candidates():
     """Get total number of active candidates"""
-    if mongodb_connected and candidates_collection is not None:
-        return candidates_collection.count_documents({"is_active": True})
-    return 0
+    try:
+        if mongodb_connected and candidates_collection is not None:
+            return candidates_collection.count_documents({"is_active": True})
+        return 0
+    except Exception as e:
+        logger.error(f"Error getting total candidates: {e}")
+        return 0
 
 # Initialize default admin
 def init_default_admin():
     """Initialize default admin account"""
-    print("🔍 Checking for admin account...")
+    logger.info("🔍 Checking for admin account...")
     
     if mongodb_connected and admins_collection is not None:
-        admin = admins_collection.find_one({"username": "admin"})
-        if admin:
-            print("✅ Admin account found in MongoDB")
-            return True
-        
-        print("⚠️ Admin account not found, creating...")
-        admin_data = {
-            "username": "admin",
-            "password": "admin123",
-            "role": "admin",
-            "full_name": "System Administrator",
-            "created_at": datetime.now()
-        }
         try:
+            admin = admins_collection.find_one({"username": "admin"})
+            if admin:
+                logger.info("✅ Admin account found in MongoDB")
+                return True
+            
+            logger.info("⚠️ Admin account not found, creating...")
+            admin_data = {
+                "username": "admin",
+                "password": "admin123",
+                "role": "admin",
+                "full_name": "System Administrator",
+                "created_at": datetime.now()
+            }
             admins_collection.insert_one(admin_data)
-            print("✅ Admin account created in MongoDB")
+            logger.info("✅ Admin account created in MongoDB")
             return True
         except Exception as e:
-            print(f"❌ Failed to create admin in MongoDB: {e}")
+            logger.error(f"❌ Failed to create admin in MongoDB: {e}")
             return False
     
     return False
@@ -406,6 +504,11 @@ def voting_page():
 def get_image(image_id):
     """Serve image from MongoDB"""
     try:
+        # Validate ObjectId
+        obj_id = safe_object_id(image_id)
+        if not obj_id:
+            return jsonify({'success': False, 'message': 'Invalid image ID'}), 400
+            
         image_data = get_image_from_mongodb(image_id)
         if image_data:
             # Determine content type based on image data
@@ -415,7 +518,10 @@ def get_image(image_id):
                     image_data = image_data.split('base64,')[1]
             
             # Decode base64
-            image_bytes = base64.b64decode(image_data)
+            try:
+                image_bytes = base64.b64decode(image_data)
+            except:
+                return jsonify({'success': False, 'message': 'Invalid image data'}), 400
             
             # Determine content type (default to JPEG)
             content_type = 'image/jpeg'
@@ -433,7 +539,7 @@ def get_image(image_id):
             )
         return jsonify({'success': False, 'message': 'Image not found'}), 404
     except Exception as e:
-        print(f"Error serving image: {e}")
+        logger.error(f"Error serving image: {e}")
         return jsonify({'success': False, 'message': str(e)}), 500
 
 @app.route('/api/test', methods=['GET'])
@@ -443,8 +549,45 @@ def test_api():
         'success': True,
         'message': 'Server is running',
         'mongodb': mongodb_connected,
-        'admin_account': 'Created' if get_admin("admin") else 'Not Found'
+        'admin_account': 'Created' if get_admin("admin") else 'Not Found',
+        'environment': os.environ.get('RENDER', 'not set')
     })
+
+@app.route('/api/debug/mongodb', methods=['GET'])
+def debug_mongodb():
+    """Debug MongoDB connection"""
+    try:
+        if mongodb_connected and users_collection is not None:
+            # Try to count documents
+            user_count = users_collection.count_documents({})
+            admin_count = admins_collection.count_documents({}) if admins_collection else 0
+            
+            # Test write operation
+            test_doc = {"test": "connection", "timestamp": datetime.now()}
+            test_result = users_collection.insert_one(test_doc)
+            users_collection.delete_one({"_id": test_result.inserted_id})
+            
+            return jsonify({
+                'success': True,
+                'connected': True,
+                'user_count': user_count,
+                'admin_count': admin_count,
+                'mongodb_uri_set': bool(os.environ.get('MONGODB_URI')),
+                'write_test': 'passed'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'connected': False,
+                'mongodb_uri_set': bool(os.environ.get('MONGODB_URI')),
+                'message': 'MongoDB connection failed'
+            })
+    except Exception as e:
+        logger.error(f"Debug MongoDB error: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        })
 
 @app.route('/api/register', methods=['POST'])
 def register():
@@ -521,7 +664,7 @@ def register():
             # Create user document
             user_data = {
                 "username": username,
-                "password": password,
+                "password": password,  # In production, hash this!
                 "role": "voter",
                 "full_name": full_name or decoded_data.get('name', username),
                 "aadhaar_number": aadhaar_number,
@@ -552,9 +695,11 @@ def register():
                 return jsonify({'success': False, 'message': 'Failed to create user account'})
                 
         except Exception as e:
+            logger.error(f"Aadhaar XML decoding error: {e}")
             return jsonify({'success': False, 'message': f'Invalid Aadhaar XML: {str(e)}'})
         
     except Exception as e:
+        logger.error(f"Registration error: {e}")
         return jsonify({'success': False, 'message': f'Registration failed: {str(e)}'})
 
 @app.route('/api/validate_aadhaar_xml', methods=['POST'])
@@ -603,6 +748,7 @@ def validate_aadhaar_xml():
         })
         
     except Exception as e:
+        logger.error(f"Validation error: {e}")
         return jsonify({'success': False, 'message': f'Aadhaar XML validation failed: {str(e)}'})
 
 @app.route('/api/login', methods=['POST'])
@@ -638,6 +784,7 @@ def login():
         })
         
     except Exception as e:
+        logger.error(f"Login error: {e}")
         return jsonify({'success': False, 'message': f'Login failed: {str(e)}'})
 
 @app.route('/api/admin_login', methods=['POST'])
@@ -648,7 +795,7 @@ def admin_login():
         username = data.get('username', '').strip()
         password = data.get('password', '').strip()
         
-        print(f"🔐 Admin login attempt: {username}")
+        logger.info(f"🔐 Admin login attempt: {username}")
         
         if not username or not password:
             return jsonify({'success': False, 'message': 'Username and password are required'})
@@ -657,7 +804,7 @@ def admin_login():
         if username == "admin" and password == "admin123":
             admin = get_admin("admin")
             if not admin:
-                print("⚠️ Admin account not found, creating on-demand...")
+                logger.info("⚠️ Admin account not found, creating on-demand...")
                 admin_data = {
                     "username": "admin",
                     "password": "admin123",
@@ -667,11 +814,11 @@ def admin_login():
                 }
                 create_admin(admin_data)
                 admin = admin_data
-                print("✅ Admin account created on-demand")
+                logger.info("✅ Admin account created on-demand")
             
             if admin.get('role') == 'admin' and admin.get('password') == password:
                 token = f"admin_token_{username}_{datetime.now().timestamp()}"
-                print(f"✅ Admin login successful: {username}")
+                logger.info(f"✅ Admin login successful: {username}")
                 
                 return jsonify({
                     'success': True,
@@ -686,15 +833,15 @@ def admin_login():
         # Regular admin check
         admin = get_admin(username)
         if not admin or admin.get('role') != 'admin':
-            print(f"❌ Admin not found or invalid role: {username}")
+            logger.warning(f"❌ Admin not found or invalid role: {username}")
             return jsonify({'success': False, 'message': 'Invalid admin credentials'})
         
         if admin.get('password') != password:
-            print(f"❌ Password mismatch for admin: {username}")
+            logger.warning(f"❌ Password mismatch for admin: {username}")
             return jsonify({'success': False, 'message': 'Invalid admin credentials'})
         
         token = f"admin_token_{username}_{datetime.now().timestamp()}"
-        print(f"✅ Admin login successful: {username}")
+        logger.info(f"✅ Admin login successful: {username}")
         
         return jsonify({
             'success': True,
@@ -707,7 +854,7 @@ def admin_login():
         })
         
     except Exception as e:
-        print(f"❌ Admin login error: {str(e)}")
+        logger.error(f"❌ Admin login error: {str(e)}")
         return jsonify({'success': False, 'message': f'Admin login failed: {str(e)}'})
 
 @app.route('/api/get_user_info', methods=['POST'])
@@ -748,6 +895,7 @@ def get_user_info():
         })
         
     except Exception as e:
+        logger.error(f"Get user info error: {e}")
         return jsonify({'success': False, 'message': f'Failed to get user info: {str(e)}'})
 
 @app.route('/api/submit_vote', methods=['POST'])
@@ -804,6 +952,7 @@ def submit_vote():
         })
         
     except Exception as e:
+        logger.error(f"Submit vote error: {e}")
         return jsonify({'success': False, 'message': f'Failed to submit vote: {str(e)}'})
 
 @app.route('/api/get_vote_history', methods=['POST'])
@@ -834,6 +983,7 @@ def get_vote_history():
         })
         
     except Exception as e:
+        logger.error(f"Get vote history error: {e}")
         return jsonify({'success': False, 'message': f'Failed to get vote history: {str(e)}'})
 
 # Admin API endpoints
@@ -869,6 +1019,7 @@ def admin_get_results():
         })
         
     except Exception as e:
+        logger.error(f"Get results error: {e}")
         return jsonify({'success': False, 'message': f'Failed to get results: {str(e)}'})
 
 @app.route('/api/admin/add_candidate', methods=['POST'])
@@ -924,7 +1075,7 @@ def admin_add_candidate():
             return jsonify({'success': False, 'message': 'Failed to add candidate'})
         
     except Exception as e:
-        print(f"Error adding candidate: {e}")
+        logger.error(f"Error adding candidate: {e}")
         return jsonify({'success': False, 'message': f'Failed to add candidate: {str(e)}'})
 
 @app.route('/api/admin/remove_candidate', methods=['POST'])
@@ -957,9 +1108,11 @@ def admin_remove_candidate():
             image_id = candidate.get('image_id')
             if image_id and images_collection:
                 try:
-                    images_collection.delete_one({'_id': ObjectId(image_id)})
-                except:
-                    pass
+                    obj_id = safe_object_id(image_id)
+                    if obj_id:
+                        images_collection.delete_one({'_id': obj_id})
+                except Exception as e:
+                    logger.error(f"Error deleting candidate image: {e}")
             
             return jsonify({
                 'success': True,
@@ -969,7 +1122,7 @@ def admin_remove_candidate():
             return jsonify({'success': False, 'message': 'Failed to remove candidate'})
         
     except Exception as e:
-        print(f"Error removing candidate: {e}")
+        logger.error(f"Error removing candidate: {e}")
         return jsonify({'success': False, 'message': f'Failed to remove candidate: {str(e)}'})
 
 # Error handlers
@@ -989,32 +1142,34 @@ def health_check():
 
 # Main entry point
 if __name__ == '__main__':
-    print("="*60)
-    print("ONLINE VOTING SYSTEM WITH AADHAAR XML INTEGRATION")
-    print("="*60)
-    print(f"📊 MongoDB: {'✅ Connected' if mongodb_connected else '❌ Not Connected'}")
-    
-    # Initialize admin
-    admin_created = init_default_admin()
-    
-    print("\n🔑 ADMIN LOGIN CREDENTIALS:")
-    if admin_created:
-        print("   Username: admin")
-        print("   Password: admin123")
-    else:
-        print("   ❌ Admin account could not be created")
-    
-    print("\n📝 IMPORTANT:")
-    print("   - Registration requires Aadhaar XML file upload")
-    print("   - Download your Aadhaar XML from: https://tathya.uidai.gov.in/access/login?role=resident")
-    print("   - Profile photos are automatically extracted from XML and stored in MongoDB")
-    print("   - Candidate images are stored in MongoDB")
-    
-    # Get port from environment variable (for Render)
-    port = int(os.environ.get('PORT', 5000))
-    
-    print(f"\n🌐 Server URL: http://0.0.0.0:{port}")
-    print("="*60)
-    
-    # Run the Flask app
-    app.run(host='0.0.0.0', port=port, debug=False)
+    # Only run debug server in development
+    if os.environ.get('RENDER') != 'true':
+        print("="*60)
+        print("ONLINE VOTING SYSTEM WITH AADHAAR XML INTEGRATION")
+        print("="*60)
+        print(f"📊 MongoDB: {'✅ Connected' if mongodb_connected else '❌ Not Connected'}")
+        
+        # Initialize admin
+        admin_created = init_default_admin()
+        
+        print("\n🔑 ADMIN LOGIN CREDENTIALS:")
+        if admin_created:
+            print("   Username: admin")
+            print("   Password: admin123")
+        else:
+            print("   ❌ Admin account could not be created")
+        
+        print("\n📝 IMPORTANT:")
+        print("   - Registration requires Aadhaar XML file upload")
+        print("   - Download your Aadhaar XML from: https://tathya.uidai.gov.in/access/login?role=resident")
+        print("   - Profile photos are automatically extracted from XML and stored in MongoDB")
+        print("   - Candidate images are stored in MongoDB")
+        
+        # Get port from environment variable (for Render)
+        port = int(os.environ.get('PORT', 5000))
+        
+        print(f"\n🌐 Server URL: http://0.0.0.0:{port}")
+        print("="*60)
+        
+        # Run the Flask app
+        app.run(host='0.0.0.0', port=port, debug=False)
