@@ -2,7 +2,7 @@
 from flask import Flask, render_template, request, jsonify, redirect, url_for, session, send_from_directory, send_file
 from flask_cors import CORS
 from pymongo import MongoClient
-from bson import ObjectId
+from bson import ObjectId, Binary
 import os
 import json
 import hashlib
@@ -122,24 +122,6 @@ class AadhaarXMLDecoder:
     def get_profile_photo(self):
         """Get profile photo as base64 string"""
         return self.profile_photo_base64
-    
-    def save_profile_photo(self, file_path):
-        """Save profile photo to file"""
-        if self.profile_photo_base64:
-            try:
-                # Remove data URL prefix if present
-                photo_data = self.profile_photo_base64
-                if 'base64,' in photo_data:
-                    photo_data = photo_data.split('base64,')[1]
-                
-                # Decode base64 and save
-                with open(file_path, 'wb') as f:
-                    f.write(base64.b64decode(photo_data))
-                return True
-            except Exception as e:
-                print(f"Error saving profile photo: {e}")
-                return False
-        return False
 
 # Initialize Flask app
 app = Flask(__name__, static_folder='.', static_url_path='')
@@ -148,23 +130,21 @@ CORS(app)
 
 # Configuration for file uploads
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
-app.config['UPLOAD_FOLDER'] = 'static/uploads'
-app.config['PROFILE_PHOTOS_FOLDER'] = 'static/profile_photos'
 app.config['ALLOWED_EXTENSIONS'] = {'xml', 'XML'}
-app.config['ALLOWED_PHOTO_EXTENSIONS'] = {'png', 'jpg', 'jpeg', 'gif'}
+app.config['ALLOWED_IMAGE_EXTENSIONS'] = {'png', 'jpg', 'jpeg', 'gif'}
 
 def allowed_file(filename, file_type='xml'):
     """Check if file extension is allowed"""
     if file_type == 'xml':
         return '.' in filename and \
                filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
-    else:  # photo
+    else:  # image
         return '.' in filename and \
-               filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_PHOTO_EXTENSIONS']
+               filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_IMAGE_EXTENSIONS']
 
 # MongoDB connection
 try:
-    # Connect to MongoDB (default: localhost:27017)
+    # Connect to MongoDB
     client = MongoClient('mongodb://localhost:27017/', serverSelectionTimeoutMS=5000)
     db = client['online_voting']
     
@@ -173,6 +153,7 @@ try:
     admins_collection = db['admins']
     candidates_collection = db['candidates']
     votes_collection = db['votes']
+    images_collection = db['images']  # New collection for storing images
     
     # Test the connection
     client.server_info()
@@ -185,280 +166,154 @@ except Exception as e:
     admins_collection = None
     candidates_collection = None
     votes_collection = None
+    images_collection = None
     mongodb_connected = False
 
-# In-memory fallback storage (if MongoDB not available)
-if not mongodb_connected:
-    # Use file-backed JSON storage as a simple persistent fallback
-    DATA_DIR = 'data'
-    USERS_FILE = os.path.join(DATA_DIR, 'users.json')
-    ADMINS_FILE = os.path.join(DATA_DIR, 'admins.json')
-    CANDIDATES_FILE = os.path.join(DATA_DIR, 'candidates.json')
-    VOTES_FILE = os.path.join(DATA_DIR, 'votes.json')
-
-    if not os.path.exists(DATA_DIR):
-        os.makedirs(DATA_DIR)
-
-    def _json_serializer(obj):
-        if isinstance(obj, datetime):
-            return obj.isoformat()
-        raise TypeError(f"Type {type(obj)} not serializable")
-
-    def _save_json(file_path, data):
-        try:
-            with open(file_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2, default=_json_serializer)
-        except Exception as e:
-            print(f"Warning: Failed to save {file_path}: {e}")
-
-    def _load_json(file_path, default):
-        try:
-            if os.path.exists(file_path):
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-        except Exception as e:
-            print(f"Warning: Failed to load {file_path}: {e}")
-        return default
-
-    # Load users and admins
-    default_users = {
-        'admin': {
-            'password': 'admin123',
-            'role': 'admin',
-            'full_name': 'System Administrator'
-        }
-    }
-    users_db = _load_json(USERS_FILE, default_users)
-    admins_db = _load_json(ADMINS_FILE, {})
-
-    # Load candidates (keys stored as strings in JSON, convert to int)
-    raw_candidates = _load_json(CANDIDATES_FILE, {})
+# Image storage functions
+def store_image_in_mongodb(image_data, image_type='profile'):
+    """Store image in MongoDB and return image ID"""
+    if not mongodb_connected or images_collection is None:
+        return None
+    
     try:
-        candidates_db = {int(k): v for k, v in raw_candidates.items()} if isinstance(raw_candidates, dict) else {}
-    except Exception:
-        candidates_db = {}
+        # Convert image to base64 if it's binary
+        if isinstance(image_data, bytes):
+            image_b64 = base64.b64encode(image_data).decode('utf-8')
+        else:
+            # Assume it's already base64 string
+            image_b64 = image_data
+        
+        # Create image document
+        image_doc = {
+            'data': image_b64,
+            'type': image_type,
+            'created_at': datetime.now()
+        }
+        
+        result = images_collection.insert_one(image_doc)
+        return str(result.inserted_id)
+    except Exception as e:
+        print(f"Error storing image in MongoDB: {e}")
+        return None
 
-    votes_db = _load_json(VOTES_FILE, [])
-
-    # Save helpers
-    def save_users():
-        _save_json(USERS_FILE, users_db)
-
-    def save_admins():
-        _save_json(ADMINS_FILE, admins_db)
-
-    def save_candidates():
-        serializable = {str(k): v for k, v in candidates_db.items()}
-        _save_json(CANDIDATES_FILE, serializable)
-
-    def save_votes():
-        _save_json(VOTES_FILE, votes_db)
-
-    # Persist defaults if any
-    save_users()
-    save_admins()
-    save_candidates()
-    save_votes()
+def get_image_from_mongodb(image_id):
+    """Retrieve image from MongoDB by ID"""
+    if not mongodb_connected or images_collection is None:
+        return None
+    
+    try:
+        image_doc = images_collection.find_one({'_id': ObjectId(image_id)})
+        if image_doc:
+            return image_doc.get('data')
+        return None
+    except Exception as e:
+        print(f"Error retrieving image from MongoDB: {e}")
+        return None
 
 # Helper functions for MongoDB/fallback
 def get_user(username):
-    """Get user from MongoDB or fallback"""
+    """Get user from MongoDB"""
     if mongodb_connected and users_collection is not None:
         return users_collection.find_one({"username": username})
-    elif not mongodb_connected:
-        return users_db.get(username)
     return None
 
 def get_user_by_aadhaar(aadhaar_number):
     """Get user by Aadhaar number"""
     if mongodb_connected and users_collection is not None:
         return users_collection.find_one({"aadhaar_number": aadhaar_number, "role": "voter"})
-    elif not mongodb_connected:
-        return next((u for u in users_db.values() if u.get('aadhaar_number') == aadhaar_number and u.get('role') == 'voter'), None)
     return None
 
 def get_admin(username):
-    """Get admin from MongoDB or fallback"""
+    """Get admin from MongoDB"""
     if mongodb_connected and admins_collection is not None:
         return admins_collection.find_one({"username": username})
-    elif not mongodb_connected:
-        return admins_db.get(username)
     return None
 
 def get_candidate(candidate_id):
-    """Get candidate from MongoDB or fallback"""
+    """Get candidate from MongoDB"""
     candidate_id = int(candidate_id) if isinstance(candidate_id, (str, float)) else candidate_id
     if mongodb_connected and candidates_collection is not None:
         return candidates_collection.find_one({"candidate_id": candidate_id})
-    elif not mongodb_connected:
-        return candidates_db.get(candidate_id)
     return None
 
 def get_all_candidates():
-    """Get all candidates from MongoDB or fallback"""
+    """Get all candidates from MongoDB"""
     if mongodb_connected and candidates_collection is not None:
         return list(candidates_collection.find({}))
-    elif not mongodb_connected:
-        return list(candidates_db.values())
     return []
 
 def get_all_votes():
-    """Get all votes from MongoDB or fallback"""
+    """Get all votes from MongoDB"""
     if mongodb_connected and votes_collection is not None:
         return list(votes_collection.find({}))
-    elif not mongodb_connected:
-        return votes_db.copy()
     return []
 
 def create_user(user_data):
-    """Create new user in MongoDB or fallback"""
+    """Create new user in MongoDB"""
     if mongodb_connected and users_collection is not None:
         result = users_collection.insert_one(user_data)
         return result.inserted_id
-    elif not mongodb_connected:
-        username = user_data['username']
-        users_db[username] = user_data
-        try:
-            save_users()
-        except Exception:
-            pass
-        return username
     return None
 
 def create_admin(admin_data):
-    """Create new admin in MongoDB or fallback"""
+    """Create new admin in MongoDB"""
     if mongodb_connected and admins_collection is not None:
         result = admins_collection.insert_one(admin_data)
         return result.inserted_id
-    elif not mongodb_connected:
-        username = admin_data['username']
-        admins_db[username] = admin_data
-        try:
-            save_admins()
-        except Exception:
-            pass
-        return username
     return None
 
 def create_candidate(candidate_data):
-    """Create new candidate in MongoDB or fallback"""
+    """Create new candidate in MongoDB"""
     if mongodb_connected and candidates_collection is not None:
         result = candidates_collection.insert_one(candidate_data)
         return result.inserted_id
-    elif not mongodb_connected:
-        candidate_id = candidate_data['candidate_id']
-        candidates_db[candidate_id] = candidate_data
-        try:
-            save_candidates()
-        except Exception:
-            pass
-        return candidate_id
     return None
 
 def create_vote(vote_data):
-    """Create new vote in MongoDB or fallback"""
+    """Create new vote in MongoDB"""
     if mongodb_connected and votes_collection is not None:
         result = votes_collection.insert_one(vote_data)
         return result.inserted_id
-    elif not mongodb_connected:
-        votes_db.append(vote_data)
-        try:
-            save_votes()
-        except Exception:
-            pass
-        return vote_data['vote_id']
     return None
 
 def update_user(username, update_data):
-    """Update user in MongoDB or fallback"""
+    """Update user in MongoDB"""
     if mongodb_connected and users_collection is not None:
         users_collection.update_one({"username": username}, {"$set": update_data})
-    elif not mongodb_connected and username in users_db:
-        users_db[username].update(update_data)
-        try:
-            save_users()
-        except Exception:
-            pass
 
 def update_candidate(candidate_id, update_data):
-    """Update candidate in MongoDB or fallback"""
+    """Update candidate in MongoDB"""
     candidate_id = int(candidate_id) if isinstance(candidate_id, (str, float)) else candidate_id
     if mongodb_connected and candidates_collection is not None:
         candidates_collection.update_one({"candidate_id": candidate_id}, {"$set": update_data})
-    elif not mongodb_connected and candidate_id in candidates_db:
-        candidates_db[candidate_id].update(update_data)
-        try:
-            save_candidates()
-        except Exception:
-            pass
 
 def delete_candidate(candidate_id):
-    """Delete candidate from MongoDB or fallback"""
+    """Delete candidate from MongoDB"""
     candidate_id = int(candidate_id) if isinstance(candidate_id, (str, float)) else candidate_id
     if mongodb_connected and candidates_collection is not None:
         result = candidates_collection.delete_one({"candidate_id": candidate_id})
         return result.deleted_count > 0
-    elif not mongodb_connected and candidate_id in candidates_db:
-        del candidates_db[candidate_id]
-        try:
-            save_candidates()
-        except Exception:
-            pass
-        return True
     return False
 
 def get_total_voters():
     """Get total number of voters"""
     if mongodb_connected and users_collection is not None:
         return users_collection.count_documents({"role": "voter"})
-    elif not mongodb_connected:
-        return sum(1 for user in users_db.values() if user.get('role') == 'voter')
     return 0
 
 def get_total_votes():
     """Get total number of votes"""
     if mongodb_connected and votes_collection is not None:
         return votes_collection.count_documents({})
-    elif not mongodb_connected:
-        return len(votes_db)
     return 0
 
 def get_total_candidates():
     """Get total number of active candidates"""
     if mongodb_connected and candidates_collection is not None:
         return candidates_collection.count_documents({"is_active": True})
-    elif not mongodb_connected:
-        return sum(1 for c in candidates_db.values() if c.get('is_active', True))
     return 0
 
-def save_profile_photo_from_xml(xml_content, username):
-    """Extract and save profile photo from XML"""
-    try:
-        decoder = AadhaarXMLDecoder(xml_content)
-        decoded_data = decoder.decode()
-        
-        photo_base64 = decoder.get_profile_photo()
-        if not photo_base64:
-            return None
-        
-        # Create profile photos directory if it doesn't exist
-        if not os.path.exists(app.config['PROFILE_PHOTOS_FOLDER']):
-            os.makedirs(app.config['PROFILE_PHOTOS_FOLDER'])
-        
-        # Generate filename
-        filename = f"{username}_profile.jpg"
-        filepath = os.path.join(app.config['PROFILE_PHOTOS_FOLDER'], filename)
-        
-        # Save photo
-        if decoder.save_profile_photo(filepath):
-            return f"/static/profile_photos/{filename}"
-        
-        return None
-    except Exception as e:
-        print(f"Error saving profile photo: {e}")
-        return None
-
-# Initialize default admin if not exists
+# Initialize default admin
 def init_default_admin():
     """Initialize default admin account"""
     print("🔍 Checking for admin account...")
@@ -484,59 +339,8 @@ def init_default_admin():
         except Exception as e:
             print(f"❌ Failed to create admin in MongoDB: {e}")
             return False
-    elif not mongodb_connected:
-        if "admin" in admins_db:
-            print("✅ Admin account found in memory")
-            return True
-        else:
-            print("⚠️ Admin account not found, creating in memory...")
-            admins_db["admin"] = {
-                "username": "admin",
-                "password": "admin123",
-                "role": "admin",
-                "full_name": "System Administrator",
-                "created_at": datetime.now()
-            }
-            print("✅ Admin account created in memory")
-            return True
     
     return False
-
-def init_default_data():
-    """Initialize default test data"""
-    print("🔍 Initializing default data...")
-    
-    # Remove all existing test data
-    if mongodb_connected:
-        # Remove test voter if exists
-        users_collection.delete_one({"username": "testvoter"})
-        
-        # Remove all existing candidates
-        candidates_collection.delete_many({})
-        
-        # Remove all existing votes
-        votes_collection.delete_many({})
-    else:
-        # Remove test voter from in-memory
-        if "testvoter" in users_db:
-            del users_db["testvoter"]
-        
-        # Clear all candidates
-        candidates_db.clear()
-        
-        # Clear all votes
-        votes_db.clear()
-        
-        # Persist cleared state to disk when using file-backed fallback
-        try:
-            save_users()
-            save_candidates()
-            save_votes()
-        except Exception:
-            pass
-    
-    print("✅ All default data cleared - starting with empty database")
-    return True
 
 def requires_auth(f):
     """Decorator for routes requiring authentication"""
@@ -564,15 +368,40 @@ def voting_page():
     """Serve the voting page"""
     return app.send_static_file('voting.html')
 
-@app.route('/static/profile_photos/<filename>')
-def serve_profile_photo(filename):
-    """Serve profile photos"""
-    return send_from_directory(app.config['PROFILE_PHOTOS_FOLDER'], filename)
-
-@app.route('/static/uploads/<filename>')
-def serve_upload(filename):
-    """Serve uploaded files"""
-    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+# New route to serve images from MongoDB
+@app.route('/api/image/<image_id>')
+def get_image(image_id):
+    """Serve image from MongoDB"""
+    try:
+        image_data = get_image_from_mongodb(image_id)
+        if image_data:
+            # Determine content type based on image data
+            if image_data.startswith('data:image/'):
+                # Extract base64 data from data URL
+                if 'base64,' in image_data:
+                    image_data = image_data.split('base64,')[1]
+            
+            # Decode base64
+            image_bytes = base64.b64decode(image_data)
+            
+            # Determine content type (default to JPEG)
+            content_type = 'image/jpeg'
+            if image_data.startswith('iVBOR'):  # PNG base64 signature
+                content_type = 'image/png'
+            elif image_data.startswith('/9j/'):  # JPEG base64 signature
+                content_type = 'image/jpeg'
+            elif image_data.startswith('R0lGOD'):  # GIF base64 signature
+                content_type = 'image/gif'
+            
+            return send_file(
+                io.BytesIO(image_bytes),
+                mimetype=content_type,
+                as_attachment=False
+            )
+        return jsonify({'success': False, 'message': 'Image not found'}), 404
+    except Exception as e:
+        print(f"Error serving image: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 @app.route('/api/test', methods=['GET'])
 def test_api():
@@ -648,8 +477,13 @@ def register():
                     'existing_user': existing_user_with_aadhaar.get('username')
                 })
             
-            # Save profile photo from XML
-            profile_photo_url = save_profile_photo_from_xml(xml_content, username)
+            # Store profile photo from XML in MongoDB
+            profile_photo_url = None
+            profile_photo_base64 = decoder.get_profile_photo()
+            if profile_photo_base64:
+                image_id = store_image_in_mongodb(profile_photo_base64, 'profile')
+                if image_id:
+                    profile_photo_url = f'/api/image/{image_id}'
             
             # Create user document
             user_data = {
@@ -662,10 +496,11 @@ def register():
                 "has_voted": False,
                 "aadhaar_data": decoded_data,
                 "profile_photo_url": profile_photo_url,
+                "profile_photo_id": image_id if profile_photo_base64 else None,
                 "created_at": datetime.now()
             }
             
-            # Save to MongoDB or in-memory
+            # Save to MongoDB
             user_id = create_user(user_data)
             
             if user_id:
@@ -722,7 +557,7 @@ def validate_aadhaar_xml():
         
         # Get profile photo if available
         profile_photo_base64 = decoder.get_profile_photo()
-        profile_photo_url = None
+        has_photo = bool(profile_photo_base64)
         
         return jsonify({
             'success': True,
@@ -731,7 +566,7 @@ def validate_aadhaar_xml():
             'is_duplicate': is_duplicate,
             'existing_user': existing_user.get('username') if existing_user else None,
             'data': decoded_data,
-            'has_photo': bool(profile_photo_base64)
+            'has_photo': has_photo
         })
         
     except Exception as e:
@@ -860,11 +695,10 @@ def get_user_info():
         active_candidates = get_all_candidates()
         active_candidates = [c for c in active_candidates if c.get('is_active', True)]
         
-        # Convert ObjectId to string for JSON serialization (MongoDB only)
-        if mongodb_connected:
-            for candidate in active_candidates:
-                if '_id' in candidate:
-                    candidate['_id'] = str(candidate['_id'])
+        # Convert ObjectId to string for JSON serialization
+        for candidate in active_candidates:
+            if '_id' in candidate:
+                candidate['_id'] = str(candidate['_id'])
         
         return jsonify({
             'success': True,
@@ -959,8 +793,6 @@ def get_vote_history():
             user_vote = votes_collection.find_one({"username": username})
             if user_vote and '_id' in user_vote:
                 user_vote['_id'] = str(user_vote['_id'])
-        elif not mongodb_connected:
-            user_vote = next((v for v in votes_db if v['username'] == username), None)
         
         return jsonify({
             'success': True,
@@ -987,11 +819,10 @@ def admin_get_results():
         
         # Get all candidates
         all_candidates = get_all_candidates()
-        # Convert ObjectId to string for JSON serialization (MongoDB only)
-        if mongodb_connected:
-            for candidate in all_candidates:
-                if '_id' in candidate:
-                    candidate['_id'] = str(candidate['_id'])
+        # Convert ObjectId to string for JSON serialization
+        for candidate in all_candidates:
+            if '_id' in candidate:
+                candidate['_id'] = str(candidate['_id'])
         
         return jsonify({
             'success': True,
@@ -1009,7 +840,7 @@ def admin_get_results():
 
 @app.route('/api/admin/add_candidate', methods=['POST'])
 def admin_add_candidate():
-    """Admin: Add a new candidate with optional image"""
+    """Admin: Add a new candidate with image stored in MongoDB"""
     try:
         name = request.form.get('name', '').strip()
         party = request.form.get('party', '').strip()
@@ -1022,26 +853,26 @@ def admin_add_candidate():
         existing_ids = [c.get('candidate_id', 0) for c in all_candidates]
         new_id = max(existing_ids) + 1 if existing_ids else 1
         
-        # Handle image upload
+        # Handle image upload - store in MongoDB
         image_url = None
+        image_id = None
         if 'image' in request.files:
             file = request.files['image']
-            if file and file.filename and allowed_file(file.filename, 'photo'):
-                # Create upload folder if it doesn't exist
-                if not os.path.exists(app.config['UPLOAD_FOLDER']):
-                    os.makedirs(app.config['UPLOAD_FOLDER'])
+            if file and file.filename and allowed_file(file.filename, 'image'):
+                # Read file as bytes
+                file_bytes = file.read()
                 
-                # Generate secure filename
-                filename = secure_filename(f"candidate_{new_id}_{file.filename}")
-                file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-                file.save(file_path)
-                image_url = f'/static/uploads/{filename}'
+                # Store image in MongoDB
+                image_id = store_image_in_mongodb(file_bytes, 'candidate')
+                if image_id:
+                    image_url = f'/api/image/{image_id}'
         
         candidate_data = {
             'candidate_id': new_id,
             'name': name,
             'party': party,
             'image_url': image_url,
+            'image_id': image_id,
             'is_active': True,
             'votes': 0,
             'created_at': datetime.now()
@@ -1085,10 +916,18 @@ def admin_remove_candidate():
         
         candidate_name = candidate.get('name', 'Unknown')
         
-        # Delete the candidate completely (not just mark as inactive)
+        # Delete the candidate completely
         deleted = delete_candidate(candidate_id)
         
         if deleted:
+            # Also delete associated image from MongoDB if exists
+            image_id = candidate.get('image_id')
+            if image_id and images_collection:
+                try:
+                    images_collection.delete_one({'_id': ObjectId(image_id)})
+                except:
+                    pass
+            
             return jsonify({
                 'success': True,
                 'message': f'Candidate {candidate_name} removed successfully'
@@ -1099,64 +938,6 @@ def admin_remove_candidate():
     except Exception as e:
         print(f"Error removing candidate: {e}")
         return jsonify({'success': False, 'message': f'Failed to remove candidate: {str(e)}'})
-
-# Alternative registration method for testing
-@app.route('/api/register_without_aadhaar', methods=['POST'])
-def register_without_aadhaar():
-    """Alternative registration for testing without Aadhaar XML"""
-    try:
-        data = request.get_json()
-        username = data.get('username', '').strip()
-        password = data.get('password', '').strip()
-        full_name = data.get('full_name', '').strip()
-        
-        if not username or not password:
-            return jsonify({'success': False, 'message': 'Username and password are required'})
-        
-        if len(username) < 3:
-            return jsonify({'success': False, 'message': 'Username must be at least 3 characters'})
-        
-        if len(password) < 6:
-            return jsonify({'success': False, 'message': 'Password must be at least 6 characters'})
-        
-        # Check if username already exists
-        existing_user = get_user(username)
-        if existing_user:
-            return jsonify({'success': False, 'message': 'Username already exists'})
-        
-        # Create user document without Aadhaar verification
-        user_data = {
-            "username": username,
-            "password": password,
-            "role": "voter",
-            "full_name": full_name or username,
-            "aadhaar_number": f"TEST_{username}",  # Test Aadhaar number
-            "is_verified": False,  # Not verified since no Aadhaar XML
-            "has_voted": False,
-            "aadhaar_data": {},
-            "profile_photo_url": None,
-            "created_at": datetime.now()
-        }
-        
-        # Save to MongoDB or in-memory
-        user_id = create_user(user_data)
-        
-        if user_id:
-            return jsonify({
-                'success': True,
-                'message': 'Registration successful (TEST MODE - No Aadhaar verification)',
-                'user': {
-                    'username': username,
-                    'full_name': full_name or username,
-                    'aadhaar_number': f"TEST_{username}",
-                    'is_verified': False
-                }
-            })
-        else:
-            return jsonify({'success': False, 'message': 'Failed to create user account'})
-        
-    except Exception as e:
-        return jsonify({'success': False, 'message': f'Registration failed: {str(e)}'})
 
 # Error handlers
 @app.errorhandler(404)
@@ -1174,11 +955,8 @@ if __name__ == '__main__':
     print("="*60)
     print(f"📊 MongoDB: {'✅ Connected' if mongodb_connected else '❌ Not Connected'}")
     
-    # Initialize admin but do NOT clear existing data by default (preserve persisted data)
+    # Initialize admin
     admin_created = init_default_admin()
-    # To explicitly reset default test data, set environment variable RESET_DEFAULTS=1
-    if os.environ.get('RESET_DEFAULTS') == '1':
-        init_default_data()  # Only run when explicitly requested
     
     print("\n🔑 ADMIN LOGIN CREDENTIALS:")
     if admin_created:
@@ -1190,21 +968,12 @@ if __name__ == '__main__':
     print("\n📝 IMPORTANT:")
     print("   - Registration requires Aadhaar XML file upload")
     print("   - Download your Aadhaar XML from: https://tathya.uidai.gov.in/access/login?role=resident")
-    print("   - Profile photos are automatically extracted from XML")
-    print("   - For testing without Aadhaar, use the alternative registration endpoint")
+    print("   - Profile photos are automatically extracted from XML and stored in MongoDB")
+    print("   - Candidate images are stored in MongoDB")
     
     print("\n🌐 Server URL: http://127.0.0.1:5000")
     print("   Admin Panel: http://127.0.0.1:5000/admin")
     print("="*60)
-    
-    # Create necessary directories
-    if not os.path.exists('temp'):
-        os.makedirs('temp')
-    
-    # Create upload directories
-    for folder in [app.config['UPLOAD_FOLDER'], app.config['PROFILE_PHOTOS_FOLDER']]:
-        if not os.path.exists(folder):
-            os.makedirs(folder)
     
     # Run the Flask app
     app.run(host='127.0.0.1', port=5000, debug=True, use_reloader=False)

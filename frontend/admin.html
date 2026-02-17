@@ -447,6 +447,8 @@
             const statusColor = isActive ? '#28a745' : '#dc3545';
             const statusText = isActive ? 'Active' : 'Inactive';
             const votes = candidate.votes || 0;
+            
+            // Use MongoDB image URL or placeholder
             const imageUrl = candidate.image_url || 'https://via.placeholder.com/100?text=No+Image';
             const candidateId = candidate.candidate_id;
 
