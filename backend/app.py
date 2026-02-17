@@ -123,9 +123,14 @@ class AadhaarXMLDecoder:
         """Get profile photo as base64 string"""
         return self.profile_photo_base64
 
-# Initialize Flask app
-app = Flask(__name__, static_folder='.', static_url_path='')
-app.secret_key = 'your-secret-key-here-change-in-production'
+# Initialize Flask app - serve frontend files from sibling `frontend` folder
+app = Flask(__name__,
+            static_folder='../frontend',
+            static_url_path='',
+            template_folder='../frontend')
+
+# Get secret key from environment variable
+app.secret_key = os.environ.get('SECRET_KEY', 'your-secret-key-here-change-in-production')
 CORS(app)
 
 # Configuration for file uploads
@@ -143,31 +148,59 @@ def allowed_file(filename, file_type='xml'):
                filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_IMAGE_EXTENSIONS']
 
 # MongoDB connection
-try:
-    # Connect to MongoDB
-    client = MongoClient('mongodb://localhost:27017/', serverSelectionTimeoutMS=5000)
-    db = client['online_voting']
-    
-    # Collections
-    users_collection = db['users']
-    admins_collection = db['admins']
-    candidates_collection = db['candidates']
-    votes_collection = db['votes']
-    images_collection = db['images']  # New collection for storing images
-    
-    # Test the connection
-    client.server_info()
-    mongodb_connected = True
-    print("✅ Successfully connected to MongoDB")
-except Exception as e:
-    print(f"❌ Error connecting to MongoDB: {e}")
-    print("⚠️ Using in-memory storage as fallback")
-    users_collection = None
-    admins_collection = None
-    candidates_collection = None
-    votes_collection = None
-    images_collection = None
-    mongodb_connected = False
+def get_mongodb_connection():
+    """Get MongoDB connection from environment variables"""
+    try:
+        # Get MongoDB URI from environment variable (set in Render)
+        mongodb_uri = os.environ.get('MONGODB_URI')
+        
+        if not mongodb_uri:
+            # Fallback for local development
+            mongodb_uri = 'mongodb://localhost:27017/'
+            print("⚠️ MONGODB_URI not set, using local MongoDB")
+        
+        # Connect to MongoDB
+        client = MongoClient(mongodb_uri, serverSelectionTimeoutMS=5000)
+        db = client['online_voting']  # You can change this database name
+        
+        # Test the connection
+        client.server_info()
+        
+        # Collections
+        users_collection = db['users']
+        admins_collection = db['admins']
+        candidates_collection = db['candidates']
+        votes_collection = db['votes']
+        images_collection = db['images']
+        
+        print("✅ Successfully connected to MongoDB")
+        return {
+            'connected': True,
+            'users': users_collection,
+            'admins': admins_collection,
+            'candidates': candidates_collection,
+            'votes': votes_collection,
+            'images': images_collection
+        }
+    except Exception as e:
+        print(f"❌ Error connecting to MongoDB: {e}")
+        return {
+            'connected': False,
+            'users': None,
+            'admins': None,
+            'candidates': None,
+            'votes': None,
+            'images': None
+        }
+
+# Initialize MongoDB connection
+mongo = get_mongodb_connection()
+mongodb_connected = mongo['connected']
+users_collection = mongo['users']
+admins_collection = mongo['admins']
+candidates_collection = mongo['candidates']
+votes_collection = mongo['votes']
+images_collection = mongo['images']
 
 # Image storage functions
 def store_image_in_mongodb(image_data, image_type='profile'):
@@ -356,17 +389,17 @@ def requires_auth(f):
 @app.route('/')
 def index():
     """Serve the main index page"""
-    return app.send_static_file('index.html')
+    return render_template('index.html')
 
 @app.route('/admin')
 def admin_page():
     """Serve the admin page"""
-    return app.send_static_file('admin.html')
+    return render_template('admin.html')
 
 @app.route('/voting')
 def voting_page():
     """Serve the voting page"""
-    return app.send_static_file('voting.html')
+    return render_template('voting.html')
 
 # New route to serve images from MongoDB
 @app.route('/api/image/<image_id>')
@@ -948,6 +981,12 @@ def not_found(error):
 def server_error(error):
     return jsonify({'success': False, 'message': 'Internal server error'}), 500
 
+# Health check endpoint for Render
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint for Render"""
+    return jsonify({'status': 'healthy'}), 200
+
 # Main entry point
 if __name__ == '__main__':
     print("="*60)
@@ -971,9 +1010,11 @@ if __name__ == '__main__':
     print("   - Profile photos are automatically extracted from XML and stored in MongoDB")
     print("   - Candidate images are stored in MongoDB")
     
-    print("\n🌐 Server URL: http://127.0.0.1:5000")
-    print("   Admin Panel: http://127.0.0.1:5000/admin")
+    # Get port from environment variable (for Render)
+    port = int(os.environ.get('PORT', 5000))
+    
+    print(f"\n🌐 Server URL: http://0.0.0.0:{port}")
     print("="*60)
     
     # Run the Flask app
-    app.run(host='127.0.0.1', port=5000, debug=True, use_reloader=False)
+    app.run(host='0.0.0.0', port=port, debug=False)
