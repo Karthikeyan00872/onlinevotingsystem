@@ -560,7 +560,7 @@ def debug_mongodb():
         if mongodb_connected and users_collection is not None:
             # Try to count documents
             user_count = users_collection.count_documents({})
-            admin_count = admins_collection.count_documents({}) if admins_collection else 0
+            admin_count = admins_collection.count_documents({}) if admins_collection is not None else 0
             
             # Test write operation
             test_doc = {"test": "connection", "timestamp": datetime.now()}
@@ -1106,7 +1106,7 @@ def admin_remove_candidate():
         if deleted:
             # Also delete associated image from MongoDB if exists
             image_id = candidate.get('image_id')
-            if image_id and images_collection:
+            if image_id and images_collection is not None:
                 try:
                     obj_id = safe_object_id(image_id)
                     if obj_id:

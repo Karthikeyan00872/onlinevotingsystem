@@ -549,22 +549,81 @@
     }
 
     function removeCandidatePrompt(candidateId, candidateName) {
-        if (confirm(`Are you sure you want to remove candidate "${candidateName}" (ID: ${candidateId})? This action cannot be undone.`)) {
-            removeCandidate(candidateId);
-        }
+        showConfirmDialog(
+            'Confirm Removal',
+            `Are you sure you want to remove candidate "${candidateName}" (ID: ${candidateId})? This action cannot be undone.`
+        ).then((confirmed) => {
+            if (confirmed) {
+                removeCandidate(candidateId);
+            }
+        });
+    }
+
+    function showConfirmDialog(title, message) {
+        return new Promise((resolve) => {
+            const icon = document.getElementById('message-icon');
+            const titleEl = document.getElementById('message-title');
+            const contentEl = document.getElementById('message-content');
+            const okBtn = document.getElementById('message-close');
+
+            if (!icon || !titleEl || !contentEl || !okBtn) {
+                resolve(confirm(message));
+                return;
+            }
+
+            let cancelBtn = document.getElementById('message-cancel');
+            if (!cancelBtn) {
+                cancelBtn = document.createElement('button');
+                cancelBtn.id = 'message-cancel';
+                cancelBtn.className = 'btn';
+                cancelBtn.style.marginRight = '10px';
+                okBtn.parentNode.insertBefore(cancelBtn, okBtn);
+            }
+
+            icon.innerHTML = '<i class="fas fa-exclamation-triangle"></i>';
+            icon.style.color = '#ffc107';
+            icon.style.fontSize = '50px';
+            titleEl.textContent = title;
+            contentEl.textContent = message;
+
+            okBtn.textContent = 'Remove';
+            okBtn.className = 'btn btn-danger';
+            cancelBtn.textContent = 'Cancel';
+            cancelBtn.style.display = 'inline-block';
+
+            okBtn.onclick = () => {
+                showModal('message-modal', false);
+                okBtn.textContent = 'OK';
+                okBtn.className = 'btn btn-primary';
+                cancelBtn.style.display = 'none';
+                resolve(true);
+            };
+
+            cancelBtn.onclick = () => {
+                showModal('message-modal', false);
+                okBtn.textContent = 'OK';
+                okBtn.className = 'btn btn-primary';
+                cancelBtn.style.display = 'none';
+                resolve(false);
+            };
+
+            showModal('message-modal', true);
+        });
     }
 
     function removeCandidateById() {
         const candidateId = document.getElementById('remove-candidate-id').value.trim();
-        
+
         if (!candidateId) {
             showMessage('error', 'Error', 'Please enter a candidate ID');
             return;
         }
-        
-        if (confirm(`Are you sure you want to remove candidate with ID ${candidateId}?`)) {
-            removeCandidate(candidateId);
-        }
+
+        showConfirmDialog('Confirm Removal', `Are you sure you want to remove candidate with ID ${candidateId}?`).then((confirmed) => {
+            if (confirmed) {
+                removeCandidate(candidateId);
+            }
+        });
     }
 
     async function removeCandidate(candidateId) {
@@ -580,16 +639,9 @@
             showModal('loading-modal', false);
 
             if (data.success) {
-                document.getElementById('remove-candidate-result').innerHTML = `
-                    <div class="success-message">
-                        <i class="fas fa-check-circle"></i> ${data.message}
-                    </div>
-                `;
+                showMessage('success', 'Candidate Removed', data.message);
                 document.getElementById('remove-candidate-id').value = '';
-                
-                setTimeout(() => {
-                    document.getElementById('remove-candidate-result').innerHTML = '';
-                }, 3000);
+                document.getElementById('remove-candidate-result').innerHTML = '';
                 
                 // Refresh both results and candidates list
                 refreshResults();
