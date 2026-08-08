@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>Online Voting System1</title>
+    <title>Online Voting System</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap"
@@ -26,6 +26,12 @@
 </head>
 
 <body>
+    <div class="election-live-bg" aria-hidden="true">
+        <span></span>
+        <span></span>
+        <span></span>
+        <span></span>
+    </div>
     <div id="server-warning" style="display:none; background:#fff3cd; border:1px solid #ffeeba; padding:12px; text-align:center; font-weight:500;">
         <strong>Warning:</strong> This page appears to be opened directly from your filesystem. Please run the Flask server and open the site at <code>http://127.0.0.1:5000</code> for full functionality (login/register require the backend).
     </div>
@@ -46,6 +52,14 @@
                     <h2><i class="fas fa-shield-alt"></i> Secure Voting Platform</h2>
                     <p>Experience secure, transparent, and efficient digital voting with Aadhaar XML-based authentication.</p>
 
+                    <div class="live-election-strip" aria-label="Live election platform status">
+                        <div class="live-pill">
+                            <span class="pulse-dot"></span> Live election desk
+                        </div>
+                        <div><i class="fas fa-lock"></i> Encrypted ballot flow</div>
+                        <div><i class="fas fa-satellite-dish"></i> Real-time monitoring</div>
+                    </div>
+
                     <div class="features">
                         <div class="feature">
                             <i class="fas fa-file-code"></i>
@@ -62,6 +76,21 @@
                             <h4>Real-time Results</h4>
                             <p>Live voting statistics and results dashboard</p>
                         </div>
+                    </div>
+                </div>
+
+                <div class="election-hero-panel">
+                    <div class="hero-stat">
+                        <span>Identity Gate</span>
+                        <strong>Aadhaar XML</strong>
+                    </div>
+                    <div class="hero-stat">
+                        <span>Ballot State</span>
+                        <strong>Protected</strong>
+                    </div>
+                    <div class="hero-stat">
+                        <span>Audit Trail</span>
+                        <strong>Active</strong>
                     </div>
                 </div>
 

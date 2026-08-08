@@ -1123,3 +1123,248 @@ input:focus, select:focus, textarea:focus {
         font-size: 1rem;
     }
 }
+
+/* Professional election theme refresh */
+:root {
+    --election-navy: #061a40;
+    --election-blue: #0f5fff;
+    --election-cyan: #23d5ff;
+    --election-green: #19c37d;
+    --election-gold: #f8c84a;
+    --election-ink: #14213d;
+    --election-muted: #64748b;
+    --panel-bg: rgba(255, 255, 255, 0.94);
+    --line-soft: rgba(15, 95, 255, 0.14);
+}
+
+body {
+    background:
+        radial-gradient(circle at 12% 18%, rgba(35, 213, 255, 0.25), transparent 28%),
+        radial-gradient(circle at 88% 12%, rgba(248, 200, 74, 0.22), transparent 26%),
+        radial-gradient(circle at 80% 84%, rgba(25, 195, 125, 0.24), transparent 30%),
+        linear-gradient(135deg, #061a40 0%, #0b2f6b 45%, #0f766e 100%);
+    color: var(--election-ink);
+    overflow-x: hidden;
+    position: relative;
+}
+
+body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background-image:
+        linear-gradient(rgba(255, 255, 255, 0.06) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.06) 1px, transparent 1px);
+    background-size: 56px 56px;
+    mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.8), transparent 78%);
+}
+
+.election-live-bg {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    overflow: hidden;
+    z-index: 0;
+}
+
+.election-live-bg span {
+    position: absolute;
+    width: 170px;
+    height: 170px;
+    border-radius: 42px;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    background: linear-gradient(135deg, rgba(255,255,255,0.16), rgba(255,255,255,0.03));
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.22);
+    animation: floatBallot 16s ease-in-out infinite;
+}
+
+.election-live-bg span::before {
+    content: "✓";
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    color: rgba(255, 255, 255, 0.25);
+    font-size: 4rem;
+    font-weight: 700;
+}
+
+.election-live-bg span:nth-child(1) { left: 5%; top: 12%; animation-delay: 0s; }
+.election-live-bg span:nth-child(2) { right: 8%; top: 18%; animation-delay: -4s; transform: scale(0.72); }
+.election-live-bg span:nth-child(3) { left: 14%; bottom: 8%; animation-delay: -8s; transform: scale(0.58); }
+.election-live-bg span:nth-child(4) { right: 18%; bottom: 10%; animation-delay: -11s; transform: scale(0.85); }
+
+@keyframes floatBallot {
+    0%, 100% { translate: 0 0; rotate: -6deg; }
+    50% { translate: 0 -28px; rotate: 7deg; }
+}
+
+.container {
+    position: relative;
+    z-index: 1;
+    background: var(--panel-bg);
+    border: 1px solid rgba(255, 255, 255, 0.55);
+    box-shadow: 0 28px 90px rgba(2, 12, 27, 0.42);
+    backdrop-filter: blur(18px);
+}
+
+.page {
+    background:
+        linear-gradient(135deg, rgba(255,255,255,0.95), rgba(245,249,255,0.9)),
+        radial-gradient(circle at top right, rgba(35, 213, 255, 0.1), transparent 35%);
+}
+
+.logo i,
+.feature i,
+#user-details i,
+#voter-details i,
+.qr-preview-card i,
+.file-upload-area i,
+.xml-upload-area i {
+    color: var(--election-blue);
+    background: linear-gradient(135deg, var(--election-blue), var(--election-cyan), var(--election-green));
+    background-clip: text;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+.logo h1,
+.header h2,
+.welcome-card h2,
+.admin-section h3,
+.user-info-card h3 {
+    color: var(--election-navy);
+}
+
+.tagline {
+    color: var(--election-muted);
+    letter-spacing: 0.02em;
+}
+
+.welcome-card,
+.user-info-card,
+.qr-section,
+.stat-card {
+    background: linear-gradient(135deg, rgba(15, 95, 255, 0.08), rgba(35, 213, 255, 0.08), rgba(25, 195, 125, 0.07));
+    border-color: var(--line-soft);
+    box-shadow: 0 16px 35px rgba(15, 23, 42, 0.08);
+}
+
+.live-election-strip,
+.election-hero-panel {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px;
+    margin: 24px 0 6px;
+}
+
+.live-election-strip > div,
+.hero-stat,
+.feature,
+.admin-section,
+.candidate-card,
+#candidates-list .candidate-card,
+.auth-form form {
+    background: rgba(255, 255, 255, 0.9);
+    border: 1px solid rgba(15, 95, 255, 0.12);
+    box-shadow: 0 14px 30px rgba(15, 23, 42, 0.08);
+}
+
+.live-election-strip > div,
+.hero-stat {
+    border-radius: 16px;
+    padding: 14px 16px;
+    color: var(--election-ink);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+}
+
+.live-pill {
+    color: #065f46 !important;
+    font-weight: 700;
+}
+
+.pulse-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--election-green);
+    box-shadow: 0 0 0 rgba(25, 195, 125, 0.7);
+    animation: livePulse 1.6s infinite;
+}
+
+@keyframes livePulse {
+    0% { box-shadow: 0 0 0 0 rgba(25, 195, 125, 0.7); }
+    70% { box-shadow: 0 0 0 12px rgba(25, 195, 125, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(25, 195, 125, 0); }
+}
+
+.hero-stat {
+    flex-direction: column;
+    min-height: 92px;
+}
+
+.hero-stat span {
+    color: var(--election-muted);
+    font-size: 0.84rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+
+.hero-stat strong {
+    color: var(--election-navy);
+    font-size: 1.18rem;
+}
+
+.btn-primary,
+.stat-icon,
+.full-row .table-header {
+    background: linear-gradient(135deg, var(--election-blue), #0ea5e9, var(--election-green));
+}
+
+.btn-secondary,
+.btn-outline,
+.btn-back,
+.auth-switch a,
+.quick-links a {
+    color: var(--election-blue);
+    border-color: var(--election-blue);
+}
+
+.btn-primary:hover,
+#candidates-list .candidate-card:hover,
+.candidate-card:hover,
+.feature:hover {
+    box-shadow: 0 18px 36px rgba(15, 95, 255, 0.22);
+}
+
+.feature {
+    transition: transform 0.3s ease, box-shadow 0.3s ease, border-color 0.3s ease;
+}
+
+.feature:hover {
+    transform: translateY(-6px);
+    border-color: rgba(15, 95, 255, 0.32);
+}
+
+input:focus, select:focus, textarea:focus {
+    border-color: var(--election-blue);
+    box-shadow: 0 0 0 4px rgba(15, 95, 255, 0.12);
+}
+
+.xml-upload-area,
+.file-upload-area {
+    border-color: rgba(15, 95, 255, 0.5);
+    background: linear-gradient(135deg, rgba(15, 95, 255, 0.06), rgba(35, 213, 255, 0.08));
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        scroll-behavior: auto !important;
+    }
+}
