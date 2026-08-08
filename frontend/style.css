@@ -1368,3 +1368,404 @@ input:focus, select:focus, textarea:focus {
         scroll-behavior: auto !important;
     }
 }
+
+/* Supermassive election UI polish
+   Adds a deeper glassmorphism layer, richer interactions, and stronger responsive polish. */
+:root {
+    --super-bg-1: #020617;
+    --super-bg-2: #071a52;
+    --super-bg-3: #063b5f;
+    --super-surface: rgba(255, 255, 255, 0.86);
+    --super-surface-strong: rgba(255, 255, 255, 0.96);
+    --super-border: rgba(255, 255, 255, 0.34);
+    --super-blue: #2563eb;
+    --super-cyan: #06b6d4;
+    --super-emerald: #10b981;
+    --super-purple: #7c3aed;
+    --super-gold: #f59e0b;
+    --super-red: #ef4444;
+    --super-text: #0f172a;
+    --super-muted: #64748b;
+    --super-shadow-sm: 0 10px 24px rgba(15, 23, 42, 0.10);
+    --super-shadow-md: 0 18px 46px rgba(15, 23, 42, 0.16);
+    --super-shadow-lg: 0 30px 90px rgba(2, 6, 23, 0.36);
+    --super-radius-sm: 12px;
+    --super-radius-md: 18px;
+    --super-radius-lg: 28px;
+    --super-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+html {
+    scroll-behavior: smooth;
+}
+
+body {
+    isolation: isolate;
+    background:
+        radial-gradient(circle at 10% 10%, rgba(37, 99, 235, 0.34), transparent 30%),
+        radial-gradient(circle at 90% 12%, rgba(245, 158, 11, 0.28), transparent 26%),
+        radial-gradient(circle at 84% 88%, rgba(16, 185, 129, 0.32), transparent 28%),
+        radial-gradient(circle at 18% 82%, rgba(124, 58, 237, 0.26), transparent 30%),
+        linear-gradient(140deg, var(--super-bg-1), var(--super-bg-2) 46%, var(--super-bg-3));
+}
+
+body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background:
+        linear-gradient(115deg, transparent 0 42%, rgba(255, 255, 255, 0.08) 43% 44%, transparent 45% 100%),
+        repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.035) 0 1px, transparent 1px 110px);
+    opacity: 0.72;
+}
+
+.container {
+    border-radius: clamp(18px, 3vw, 34px);
+    background:
+        linear-gradient(145deg, rgba(255, 255, 255, 0.94), rgba(241, 245, 249, 0.84)),
+        radial-gradient(circle at 100% 0%, rgba(6, 182, 212, 0.18), transparent 42%);
+    box-shadow: var(--super-shadow-lg), inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.page {
+    min-height: 620px;
+    padding: clamp(22px, 4vw, 48px);
+}
+
+.header::after {
+    content: "";
+    display: block;
+    width: min(220px, 48vw);
+    height: 4px;
+    margin: 18px auto 0;
+    border-radius: 999px;
+    background: linear-gradient(90deg, transparent, var(--super-blue), var(--super-cyan), var(--super-emerald), transparent);
+}
+
+.logo i {
+    filter: drop-shadow(0 12px 22px rgba(37, 99, 235, 0.28));
+}
+
+.logo h1,
+.header h2 {
+    letter-spacing: -0.04em;
+    text-wrap: balance;
+}
+
+.tagline,
+.welcome-card p,
+.feature p,
+.note,
+.auth-switch,
+.stat-info p {
+    line-height: 1.7;
+}
+
+.welcome-section {
+    padding: clamp(18px, 3vw, 42px);
+}
+
+.welcome-card,
+.user-info-card,
+.qr-section,
+.admin-section,
+.feature,
+.candidate-card,
+#candidates-list .candidate-card,
+.stat-card,
+.auth-form form,
+.modal-content,
+.live-election-strip > div,
+.hero-stat {
+    position: relative;
+    overflow: hidden;
+    border-radius: var(--super-radius-md);
+    backdrop-filter: blur(16px) saturate(1.18);
+}
+
+.welcome-card::before,
+.user-info-card::before,
+.qr-section::before,
+.admin-section::before,
+.feature::before,
+.candidate-card::before,
+#candidates-list .candidate-card::before,
+.stat-card::before,
+.auth-form form::before,
+.modal-content::before,
+.hero-stat::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: linear-gradient(135deg, rgba(255,255,255,0.42), transparent 38%, rgba(255,255,255,0.16));
+    opacity: 0.75;
+}
+
+.welcome-card > *,
+.user-info-card > *,
+.qr-section > *,
+.admin-section > *,
+.feature > *,
+.candidate-card > *,
+#candidates-list .candidate-card > *,
+.stat-card > *,
+.auth-form form > *,
+.modal-content > *,
+.hero-stat > * {
+    position: relative;
+    z-index: 1;
+}
+
+.feature,
+.candidate-card,
+#candidates-list .candidate-card,
+.admin-section,
+.stat-card,
+.scan-option,
+.live-election-strip > div,
+.hero-stat {
+    transform: translateZ(0);
+    transition:
+        transform 260ms var(--super-ease),
+        box-shadow 260ms var(--super-ease),
+        border-color 260ms var(--super-ease),
+        background 260ms var(--super-ease);
+}
+
+.feature:hover,
+.candidate-card:hover,
+#candidates-list .candidate-card:hover,
+.admin-section:hover,
+.stat-card:hover,
+.scan-option:hover,
+.live-election-strip > div:hover,
+.hero-stat:hover {
+    transform: translateY(-8px) scale(1.01);
+    border-color: rgba(37, 99, 235, 0.34);
+    box-shadow: var(--super-shadow-md);
+}
+
+.btn {
+    min-height: 46px;
+    border-radius: 999px;
+    letter-spacing: 0.01em;
+    position: relative;
+    overflow: hidden;
+    transform: translateZ(0);
+    transition: transform 220ms var(--super-ease), box-shadow 220ms var(--super-ease), background 220ms var(--super-ease), color 220ms var(--super-ease);
+}
+
+.btn::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    translate: -120% 0;
+    background: linear-gradient(105deg, transparent 35%, rgba(255, 255, 255, 0.38), transparent 65%);
+    transition: translate 520ms var(--super-ease);
+}
+
+.btn:hover::after {
+    translate: 120% 0;
+}
+
+.btn:hover {
+    transform: translateY(-3px);
+}
+
+.btn-primary {
+    box-shadow: 0 14px 28px rgba(37, 99, 235, 0.24);
+}
+
+.btn-secondary:hover,
+.btn-outline:hover {
+    background: linear-gradient(135deg, var(--super-blue), var(--super-cyan));
+    border-color: transparent;
+    box-shadow: 0 14px 28px rgba(6, 182, 212, 0.22);
+}
+
+.btn-danger {
+    box-shadow: 0 14px 28px rgba(239, 68, 68, 0.20);
+}
+
+input,
+select,
+textarea {
+    min-height: 48px;
+    border-radius: 14px;
+    border-color: rgba(100, 116, 139, 0.28);
+    color: var(--super-text);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+input:hover,
+select:hover,
+textarea:hover {
+    border-color: rgba(37, 99, 235, 0.42);
+}
+
+label {
+    color: var(--super-text);
+}
+
+.action-buttons {
+    max-width: 760px;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+.action-buttons .btn {
+    justify-content: space-between;
+    padding-inline: clamp(20px, 4vw, 34px);
+}
+
+.action-buttons .btn i:first-child {
+    width: 34px;
+    height: 34px;
+    display: inline-grid;
+    place-items: center;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.2);
+}
+
+.features,
+.admin-stats,
+#candidates-list {
+    align-items: stretch;
+}
+
+.feature h4,
+.candidate-basic-info h4,
+.candidate-info h4,
+.admin-section h3 {
+    letter-spacing: -0.02em;
+}
+
+.stat-card {
+    min-height: 132px;
+    background: linear-gradient(145deg, rgba(255,255,255,0.92), rgba(239,246,255,0.84));
+}
+
+.stat-icon {
+    border-radius: 20px;
+    box-shadow: 0 14px 28px rgba(37, 99, 235, 0.24);
+}
+
+.stat-info h3 {
+    font-size: clamp(1.8rem, 4vw, 2.45rem);
+    letter-spacing: -0.05em;
+}
+
+.full-row .table-header,
+.full-row .table-row {
+    border-radius: 14px;
+    overflow: hidden;
+    margin-bottom: 8px;
+}
+
+.full-row .table-row {
+    background: rgba(255, 255, 255, 0.78);
+    box-shadow: var(--super-shadow-sm);
+}
+
+.validation-success,
+.success-message,
+.validation-error,
+.note,
+.vote-info,
+.qr-preview-card {
+    border-radius: 16px;
+    box-shadow: var(--super-shadow-sm);
+}
+
+.success-message,
+.validation-success {
+    background: linear-gradient(135deg, rgba(16, 185, 129, 0.10), rgba(236, 253, 245, 0.92));
+}
+
+.validation-error {
+    background: linear-gradient(135deg, rgba(239, 68, 68, 0.10), rgba(254, 242, 242, 0.92));
+}
+
+.xml-upload-area,
+.file-upload-area {
+    border-radius: 20px;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.66), var(--super-shadow-sm);
+}
+
+.xml-upload-area:hover,
+.file-upload-area:hover {
+    box-shadow: var(--super-shadow-md);
+}
+
+.modal {
+    backdrop-filter: blur(14px);
+    background: rgba(2, 6, 23, 0.72);
+}
+
+.modal-content {
+    border: 1px solid var(--super-border);
+    box-shadow: var(--super-shadow-lg);
+}
+
+.spinner {
+    border-color: rgba(37, 99, 235, 0.12);
+    border-top-color: var(--super-blue);
+    box-shadow: 0 0 32px rgba(37, 99, 235, 0.22);
+}
+
+.election-live-bg span {
+    filter: blur(0.1px);
+}
+
+@media (min-width: 900px) {
+    .action-buttons {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+    }
+
+    .action-buttons .btn {
+        min-height: 84px;
+        flex-direction: column;
+        justify-content: center;
+        text-align: center;
+    }
+}
+
+@media (max-width: 768px) {
+    body::before {
+        background-size: 38px 38px;
+    }
+
+    .header {
+        padding-top: 42px;
+    }
+
+    .btn-back {
+        top: 0;
+    }
+
+    .live-election-strip,
+    .election-hero-panel {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 480px) {
+    .container {
+        min-height: 100dvh;
+    }
+
+    .page {
+        min-height: 100dvh;
+    }
+
+    .btn,
+    input,
+    select,
+    textarea {
+        font-size: 0.95rem;
+    }
+}
